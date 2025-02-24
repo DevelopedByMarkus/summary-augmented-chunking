@@ -190,7 +190,7 @@ class BaselineRetrievalMethod(RetrievalMethod):
         if progress_bar:
             progress_bar.close()
 
-    async def query(self, query: str) -> QueryResponse:
+    async def query(self, query: str) -> QueryResponse:  # MR: this is the method that needs
         if self.sqlite_db is None or self.embedding_infos is None:
             raise ValueError("Sync documents before querying!")
         # Get TopK Embedding results
