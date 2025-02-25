@@ -85,7 +85,7 @@ class QueryResponse(BaseModel):
         return self
 
 
-class RetrievalMethod(ABC):
+class RetrievalMethod(ABC):  # MR: If new benchmarks are added, this class needs to be inherited from
     @abstractmethod
     async def ingest_document(self, document: Document) -> None:
         """Ingest a document into the retrieval method."""
