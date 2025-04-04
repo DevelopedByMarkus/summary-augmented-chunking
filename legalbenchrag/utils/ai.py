@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 
 import anthropic
 import cohere
-# import diskcache as dc  # type: ignore  # MR because it doesnt work
+import diskcache as dc  # type: ignore  # MR because it doesnt work
 import httpx
 import openai
 import tiktoken
@@ -118,8 +118,8 @@ class AIRerankModel(BaseModel):
 
 
 # Cache
-# os.makedirs("./data/cache", exist_ok=True)  # MR because it doesnt work
-# cache = dc.Cache("./data/cache/ai_cache.db")  # MR because it doesnt work
+os.makedirs("./data/cache", exist_ok=True)  # MR because it doesnt work
+cache = dc.Cache("./data/cache/ai_cache.db")  # MR because it doesnt work
 # cache.clear() # <--- ADD THIS LINE to clear the cache explicitly
 
 RATE_LIMIT_RATIO = 0.95
@@ -233,10 +233,10 @@ async def ai_call(
     backoff_algo: Callable[[int], float] = lambda i: min(2**i, 5),
 ) -> str:
     cache_key = get_call_cache_key(model, messages)
-    # cached_call = cache.get(cache_key)  # MR because it doesnt work
+    cached_call = cache.get(cache_key)  # MR because it doesnt work
 
-    # if cached_call is not None:  # MR because it doesnt work
-    #     return cached_call
+    if cached_call is not None:  # MR because it doesnt work
+        return cached_call
 
     num_tokens_input: int = sum(
         [ai_num_tokens(model, message.content) for message in messages]
@@ -365,7 +365,7 @@ async def ai_call(
             if return_value is None:
                 raise AITimeoutError("Cannot overcome Anthropic RateLimitError")
 
-    # cache.set(cache_key, return_value)  # MR because it doesnt work
+    cache.set(cache_key, return_value)  # MR because it doesnt work
     return return_value
 
 
@@ -388,24 +388,18 @@ async def ai_embedding(
     # Callback (For tracking progress)
     callback: Callable[[], None] = lambda: None,
 ) -> list[list[float]]:
-    ### # MR because it doesnt work because of caching
     # Extract cache miss indices
-    # text_embeddings: list[list[float] | None] = [None] * len(texts)
-    # for i, text in enumerate(texts):
-    #     cache_key = get_embeddings_cache_key(model, text, embedding_type)
-    #     text_embeddings[i] = cache.get(cache_key)
-    #     if text_embeddings[i] is not None:
-    #         callback()
-    # if not any(embedding is None for embedding in text_embeddings):
-    #     return cast(list[list[float]], text_embeddings)
-    # required_text_embeddings_indices = [
-    #     i for i in range(len(text_embeddings)) if text_embeddings[i] is None
-    # ]
-    # ---- Start Replacement ----
-    # Assume all embeddings need to be fetched (caching disabled)
-    text_embeddings: list[list[float] | None] = [None] * len(texts)  # Keep this line
-    required_text_embeddings_indices = list(range(len(texts)))  # Assume all indices are required
-    # ---- End Replacement ----
+    text_embeddings: list[list[float] | None] = [None] * len(texts)
+    for i, text in enumerate(texts):
+        cache_key = get_embeddings_cache_key(model, text, embedding_type)
+        text_embeddings[i] = cache.get(cache_key)
+        if text_embeddings[i] is not None:
+            callback()
+    if not any(embedding is None for embedding in text_embeddings):
+        return cast(list[list[float]], text_embeddings)  # MR: All needed embeddings were in cache
+    required_text_embeddings_indices = [
+        i for i in range(len(text_embeddings)) if text_embeddings[i] is None
+    ]  # MR: store all indices of which no embedding was found in the cache
 
     # Recursively Batch if necessary
     if len(required_text_embeddings_indices) > model.max_batch_len:
@@ -531,8 +525,8 @@ async def ai_embedding(
     for index, embedding in zip(
         required_text_embeddings_indices, text_embeddings_response
     ):
-        # cache_key = get_embeddings_cache_key(model, texts[index], embedding_type)  # MR because it doesnt work
-        # cache.set(cache_key, embedding)  # MR because it doesnt work
+        cache_key = get_embeddings_cache_key(model, texts[index], embedding_type)  # MR because it doesnt work
+        cache.set(cache_key, embedding)  # MR because it doesnt work
         text_embeddings[index] = embedding
         callback()
     assert all(embedding is not None for embedding in text_embeddings)
@@ -566,11 +560,11 @@ async def ai_rerank(
     # Backoff function (Receives index of attempt)
     backoff_algo: Callable[[int], float] = lambda i: min(2**i, 5),
 ) -> list[int]:
-    # cache_key = get_rerank_cache_key(model, query, texts, top_k)  # MR because it doesnt work
-    # cached_reranking = cache.get(cache_key)  # MR because it doesnt work
+    cache_key = get_rerank_cache_key(model, query, texts, top_k)  # MR because it doesnt work
+    cached_reranking = cache.get(cache_key)  # MR because it doesnt work
 
-    # if cached_reranking is not None:  # MR because it doesnt work
-    #     return cached_reranking
+    if cached_reranking is not None:  # MR because it doesnt work
+        return cached_reranking
 
     indices: list[int] | None = None
     match model.company:
@@ -622,5 +616,5 @@ async def ai_rerank(
                         await asyncio.sleep(backoff_algo(i))
             if indices is None:
                 raise AITimeoutError("Cannot overcome VoyageAI RateLimitError")
-    # cache.set(cache_key, indices)  # MR because it doesnt work
+    cache.set(cache_key, indices)  # MR because it doesnt work
     return indices
