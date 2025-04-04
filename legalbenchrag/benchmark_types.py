@@ -28,7 +28,7 @@ class Snippet(BaseModel):
     @computed_field  # type: ignore[misc]
     @property
     def answer(self) -> str:
-        with open(f"./data/corpus/{self.file_path}") as f:
+        with open(f"./data/corpus/{self.file_path}", encoding='utf-8') as f:
             return f.read()[self.span[0] : self.span[1]]
 
 

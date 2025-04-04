@@ -3,13 +3,13 @@ from typing import Literal
 from legalbenchrag.methods.baseline import ChunkingStrategy, RetrievalStrategy
 from legalbenchrag.utils.ai import AIEmbeddingModel, AIRerankModel
 
-chunk_strategy_names: list[Literal["naive", "rcts"]] = ["naive", "rcts"]
+chunk_strategy_names: list[Literal["naive", "rcts"]] = ["naive"]  # ["naive", "rcts"] MR
 rerank_models: list[AIRerankModel | None] = [
     None,
-    AIRerankModel(company="cohere", model="rerank-english-v3.0"),
+    # AIRerankModel(company="cohere", model="rerank-english-v3.0"), # MR
 ]
 chunk_sizes: list[int] = [500]
-top_ks: list[int] = [1, 2, 4, 8, 16, 32, 64]
+top_ks: list[int] = [1]  # MR [1, 2, 4, 8, 16, 32, 64]
 
 RETRIEVAL_STRATEGIES: list[RetrievalStrategy] = []
 for chunk_strategy_name in chunk_strategy_names:

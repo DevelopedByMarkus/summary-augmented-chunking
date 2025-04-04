@@ -19,7 +19,8 @@ benchmark_name_to_weight: dict[str, float] = {
 
 # This takes a random sample of the benchmark, to speed up query processing.
 # p-values can be calculated, to statistically predict the theoretical performance on the "full test"
-MAX_TESTS_PER_BENCHMARK = 194
+# MAX_TESTS_PER_BENCHMARK = 194
+MAX_TESTS_PER_BENCHMARK = 1  # MR. Minimal setup for testing
 # This sorts the tests by document,
 # so that the MAX_TESTS_PER_BENCHMARK tests are over the fewest number of documents,
 # This speeds up ingestion processing, but
@@ -33,7 +34,7 @@ async def main() -> None:
     document_file_paths_set: set[str] = set()
     used_document_file_paths_set: set[str] = set()
     for benchmark_name, weight in benchmark_name_to_weight.items():
-        with open(f"./data/benchmarks/{benchmark_name}.json") as f:
+        with open(f"./data/benchmarks/{benchmark_name}.json", encoding='utf-8') as f:
             benchmark = Benchmark.model_validate_json(f.read())
             tests = benchmark.tests
             document_file_paths_set |= {
@@ -73,7 +74,7 @@ async def main() -> None:
         if not SORT_BY_DOCUMENT
         else used_document_file_paths_set
     ):
-        with open(f"./data/corpus/{document_file_path}") as f:
+        with open(f"./data/corpus/{document_file_path}", encoding='utf-8') as f:
             corpus.append(
                 Document(
                     file_path=document_file_path,
@@ -82,7 +83,7 @@ async def main() -> None:
             )
 
     # Create a save location for this run
-    run_name = dt.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+    run_name = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     benchmark_path = f"./benchmark_results/{run_name}"
     os.makedirs(benchmark_path, exist_ok=True)
 
