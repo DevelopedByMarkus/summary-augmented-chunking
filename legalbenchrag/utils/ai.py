@@ -525,8 +525,8 @@ async def ai_embedding(
     for index, embedding in zip(
         required_text_embeddings_indices, text_embeddings_response
     ):
-        cache_key = get_embeddings_cache_key(model, texts[index], embedding_type)  # MR because it doesnt work
-        cache.set(cache_key, embedding)  # MR because it doesnt work
+        cache_key = get_embeddings_cache_key(model, texts[index], embedding_type)
+        cache.set(cache_key, embedding)
         text_embeddings[index] = embedding
         callback()
     assert all(embedding is not None for embedding in text_embeddings)

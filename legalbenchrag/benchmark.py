@@ -1,13 +1,19 @@
+# Filename: legalbenchrag/benchmark.py
 import asyncio
 import datetime as dt
 import os
 import random
 
 import pandas as pd
+from llama_index.core import Settings
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-from legalbenchrag.benchmark_types import Benchmark, Document, QAGroundTruth
-from legalbenchrag.methods.baseline import BaselineRetrievalMethod
-from legalbenchrag.methods.retrieval_strategies import RETRIEVAL_STRATEGIES
+from legalbenchrag.benchmark_types import Benchmark, Document, QAGroundTruth, RetrievalMethod
+# Import Baseline components
+from legalbenchrag.methods.baseline import BaselineRetrievalMethod, RetrievalStrategy as BaselineStrategy  # BaselineStrategy are the 4 original legalbench-rag strategies
+# Import HyPA components
+from legalbenchrag.methods.hypa import HypaRetrievalMethod, HypaStrategy
+from legalbenchrag.methods.retrieval_strategies import ALL_RETRIEVAL_STRATEGIES
 from legalbenchrag.run_benchmark import run_benchmark
 
 benchmark_name_to_weight: dict[str, float] = {
@@ -26,6 +32,18 @@ MAX_TESTS_PER_BENCHMARK = 1  # MR. Minimal setup for testing
 # This speeds up ingestion processing, but
 # p-values cannot be calculated, because this settings drastically reduces the search space size.
 SORT_BY_DOCUMENT = True
+
+# --- Global LlamaIndex Settings ---
+# Configure embedding model globally - choose one consistent with your strategies
+# This assumes HuggingFace model is needed based on HyPA code/dependencies.
+# Adjust model name as necessary. Ensure sentence-transformers is installed.
+try:
+    Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-large-en-v1.5")
+    # Settings.llm = ... # Configure LLM if needed globally by LlamaIndex components
+    print("LlamaIndex Settings configured globally.")
+except Exception as e:
+    print(f"Warning: Failed to set global LlamaIndex settings - {e}")
+    print("Ensure necessary libraries (e.g., sentence-transformers, torch) are installed.")
 
 
 async def main() -> None:
@@ -88,10 +106,52 @@ async def main() -> None:
     os.makedirs(benchmark_path, exist_ok=True)
 
     rows: list[dict[str, str | None | int | float]] = []
-    for i, retrieval_strategy in enumerate(RETRIEVAL_STRATEGIES):
-        retrieval_method = BaselineRetrievalMethod(
-            retrieval_strategy=retrieval_strategy,
-        )
+    for i, retrieval_strategy in enumerate(ALL_RETRIEVAL_STRATEGIES):
+        retrieval_method: RetrievalMethod  # Define type hint
+
+        # --- Instantiate correct RetrievalMethod based on Strategy type ---
+        if isinstance(retrieval_strategy, BaselineStrategy):
+            print(f"\n--- Running Baseline Strategy {i} ---")
+            # Cast needed if strategy types aren't perfectly aligned, Pydantic usually handles this
+            retrieval_method = BaselineRetrievalMethod(
+                retrieval_strategy=retrieval_strategy
+            )
+            # Prepare row data for Baseline
+            row: dict[str, str | None | int | float] = {
+                "i": i,
+                "method": "baseline",  # Add method identifier
+                "chunk_strategy_name": retrieval_strategy.chunking_strategy.strategy_name,
+                "chunk_size": retrieval_strategy.chunking_strategy.chunk_size,
+                "embedding_model": retrieval_strategy.embedding_model.model, # Get model name
+                "top_k": retrieval_strategy.embedding_topk,
+                "rerank_model": retrieval_strategy.rerank_model.company
+                if retrieval_strategy.rerank_model is not None
+                else None,
+                "top_k_rerank": retrieval_strategy.rerank_topk,
+                "token_limit": retrieval_strategy.token_limit,
+            }
+        elif isinstance(retrieval_strategy, HypaStrategy):
+            print(f"\n--- Running HyPA Strategy {i} ---")
+            retrieval_method = HypaRetrievalMethod(
+                strategy=retrieval_strategy
+            )
+            # Prepare row data for HyPA
+            row: dict[str, str | None | int | float] = {
+                "i": i,
+                "method": "hypa", # Add method identifier
+                "chunk_size": retrieval_strategy.chunk_size,
+                "embedding_model": retrieval_strategy.embedding_model.model,  # Get model name
+                "embedding_top_k": retrieval_strategy.embedding_top_k,
+                "bm25_top_k": retrieval_strategy.bm25_top_k,
+                "fusion_top_k": retrieval_strategy.fusion_top_k,
+                # Add other HyPA specific params here later if needed
+            }
+        else:
+            print(f"WARNING: Unknown strategy type at index {i}. Skipping.")
+            continue
+
+        # --- Run Benchmark Logic (keep as is) ---
+        print(f"Strategy Config: {retrieval_strategy.model_dump()}") # Log strategy
         print(f"Num Documents: {len(corpus)}")
         print(
             f"Num Corpus Characters: {sum(len(document.content) for document in corpus)}"
@@ -109,35 +169,34 @@ async def main() -> None:
         with open(f"{benchmark_path}/{i}_results.json", "w") as f:
             f.write(benchmark_result.model_dump_json(indent=4))
 
-        row: dict[str, str | None | int | float] = {
-            "i": i,
-            "chunk_strategy_name": retrieval_strategy.chunking_strategy.strategy_name,
-            "chunk_size": retrieval_strategy.chunking_strategy.chunk_size,
-            "top_k": retrieval_strategy.embedding_topk,
-            "rerank_model": retrieval_strategy.rerank_model.company
-            if retrieval_strategy.rerank_model is not None
-            else None,
-            "top_k_rerank": retrieval_strategy.rerank_topk,
-            "token_limit": retrieval_strategy.token_limit,
-        }
         row["recall"] = benchmark_result.avg_recall
         row["precision"] = benchmark_result.avg_precision
+
+        # Per-benchmark metrics
         for benchmark_name in benchmark_name_to_weight:
             avg_recall, avg_precision = benchmark_result.get_avg_recall_and_precision(
                 benchmark_name
             )
             row[f"{benchmark_name}|recall"] = avg_recall
             row[f"{benchmark_name}|precision"] = avg_precision
+            # Optional: print per-benchmark details
             print(f"{benchmark_name} Avg Recall: {100*avg_recall:.2f}%")
             print(f"{benchmark_name} Avg Precision: {100*avg_precision:.2f}%")
-        print(f"Avg Recall: {100*benchmark_result.avg_recall:.2f}%")
-        print(f"Avg Precision: {100*benchmark_result.avg_precision:.2f}%")
+
+        print(f"Overall Avg Recall: {100*benchmark_result.avg_recall:.2f}%")
+        print(f"Overall Avg Precision: {100*benchmark_result.avg_precision:.2f}%")
         rows.append(row)
+
     df = pd.DataFrame(rows)
+    # Ensure all expected columns exist, fill missing with None or NaN
+    # This handles cases where strategies have different parameters
+    # df = df.reindex(columns=[... list of all possible columns ...])
     df.to_csv(f"{benchmark_path}/results.csv", index=False)
 
-    print(f'All Benchmark runs saved to: "{benchmark_path}"')
+    print(f'\nAll Benchmark runs saved to: "{benchmark_path}"')
 
 
 if __name__ == "__main__":
+    # Ensure asyncio event loop compatibility if needed (e.g., on Windows)
+    # asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy()) # Only if needed
     asyncio.run(main())
