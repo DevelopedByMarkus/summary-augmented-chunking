@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 
 import anthropic
 import cohere
-import diskcache as dc  # type: ignore  # MR because it doesnt work
+import diskcache as dc
 import httpx
 import openai
 import tiktoken
@@ -118,9 +118,8 @@ class AIRerankModel(BaseModel):
 
 
 # Cache
-os.makedirs("./data/cache", exist_ok=True)  # MR because it doesnt work
-cache = dc.Cache("./data/cache/ai_cache.db")  # MR because it doesnt work
-# cache.clear() # <--- ADD THIS LINE to clear the cache explicitly
+os.makedirs("./data/cache", exist_ok=True)
+cache = dc.Cache("./data/cache/ai_cache.db")
 
 RATE_LIMIT_RATIO = 0.95
 
@@ -233,9 +232,9 @@ async def ai_call(
     backoff_algo: Callable[[int], float] = lambda i: min(2**i, 5),
 ) -> str:
     cache_key = get_call_cache_key(model, messages)
-    cached_call = cache.get(cache_key)  # MR because it doesnt work
+    cached_call = cache.get(cache_key)
 
-    if cached_call is not None:  # MR because it doesnt work
+    if cached_call is not None:
         return cached_call
 
     num_tokens_input: int = sum(
@@ -365,7 +364,7 @@ async def ai_call(
             if return_value is None:
                 raise AITimeoutError("Cannot overcome Anthropic RateLimitError")
 
-    cache.set(cache_key, return_value)  # MR because it doesnt work
+    cache.set(cache_key, return_value)
     return return_value
 
 
@@ -396,10 +395,10 @@ async def ai_embedding(
         if text_embeddings[i] is not None:
             callback()
     if not any(embedding is None for embedding in text_embeddings):
-        return cast(list[list[float]], text_embeddings)  # MR: All needed embeddings were in cache
+        return cast(list[list[float]], text_embeddings)  # All needed embeddings were in cache
     required_text_embeddings_indices = [
         i for i in range(len(text_embeddings)) if text_embeddings[i] is None
-    ]  # MR: store all indices of which no embedding was found in the cache
+    ]  # Store all indices of which no embedding was found in the cache
 
     # Recursively Batch if necessary
     if len(required_text_embeddings_indices) > model.max_batch_len:
@@ -560,10 +559,10 @@ async def ai_rerank(
     # Backoff function (Receives index of attempt)
     backoff_algo: Callable[[int], float] = lambda i: min(2**i, 5),
 ) -> list[int]:
-    cache_key = get_rerank_cache_key(model, query, texts, top_k)  # MR because it doesnt work
-    cached_reranking = cache.get(cache_key)  # MR because it doesnt work
+    cache_key = get_rerank_cache_key(model, query, texts, top_k)
+    cached_reranking = cache.get(cache_key)
 
-    if cached_reranking is not None:  # MR because it doesnt work
+    if cached_reranking is not None:
         return cached_reranking
 
     indices: list[int] | None = None
@@ -616,5 +615,5 @@ async def ai_rerank(
                         await asyncio.sleep(backoff_algo(i))
             if indices is None:
                 raise AITimeoutError("Cannot overcome VoyageAI RateLimitError")
-    cache.set(cache_key, indices)  # MR because it doesnt work
+    cache.set(cache_key, indices)
     return indices

@@ -1,12 +1,8 @@
-# Filename: legalbenchrag/benchmark.py
 import asyncio
 import datetime as dt
 import os
 import random
-
 import pandas as pd
-from llama_index.core import Settings
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 from legalbenchrag.benchmark_types import Benchmark, Document, QAGroundTruth, RetrievalMethod
 # Import Baseline components
@@ -15,6 +11,7 @@ from legalbenchrag.methods.baseline import BaselineRetrievalMethod, RetrievalStr
 from legalbenchrag.methods.hypa import HypaRetrievalMethod, HypaStrategy
 from legalbenchrag.methods.retrieval_strategies import ALL_RETRIEVAL_STRATEGIES
 from legalbenchrag.run_benchmark import run_benchmark
+from legalbenchrag.utils.credentials import credentials
 
 benchmark_name_to_weight: dict[str, float] = {
     "privacy_qa": 0.25,
@@ -25,28 +22,17 @@ benchmark_name_to_weight: dict[str, float] = {
 
 # This takes a random sample of the benchmark, to speed up query processing.
 # p-values can be calculated, to statistically predict the theoretical performance on the "full test"
-# MAX_TESTS_PER_BENCHMARK = 194
-MAX_TESTS_PER_BENCHMARK = 1  # MR. Minimal setup for testing
+MAX_TESTS_PER_BENCHMARK = 1  # 194
 # This sorts the tests by document,
 # so that the MAX_TESTS_PER_BENCHMARK tests are over the fewest number of documents,
 # This speeds up ingestion processing, but
 # p-values cannot be calculated, because this settings drastically reduces the search space size.
 SORT_BY_DOCUMENT = True
 
-# --- Global LlamaIndex Settings ---
-# Configure embedding model globally - choose one consistent with your strategies
-# This assumes HuggingFace model is needed based on HyPA code/dependencies.
-# Adjust model name as necessary. Ensure sentence-transformers is installed.
-try:
-    Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-large-en-v1.5")
-    # Settings.llm = ... # Configure LLM if needed globally by LlamaIndex components
-    print("LlamaIndex Settings configured globally.")
-except Exception as e:
-    print(f"Warning: Failed to set global LlamaIndex settings - {e}")
-    print("Ensure necessary libraries (e.g., sentence-transformers, torch) are installed.")
-
 
 async def main() -> None:
+    os.environ["OPENAI_API_KEY"] = credentials.ai.openai_api_key.get_secret_value()
+
     all_tests: list[QAGroundTruth] = []
     weights: list[float] = []
     document_file_paths_set: set[str] = set()

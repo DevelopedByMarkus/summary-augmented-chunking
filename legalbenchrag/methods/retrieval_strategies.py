@@ -45,7 +45,7 @@ HYPA_STRATEGIES.append(
         chunk_size=500,  # A common chunk size used in HyPA examples
         embedding_model=AIEmbeddingModel(  # Use the same embedding model for comparison
             company="openai",
-            model="text-embedding-3-large",
+            model="text-embedding-3-large",  # or use: local_embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-large-en-v1.5")
         ),
         embedding_top_k=5,  # Retrieve more initially for vector
         bm25_top_k=5,      # Retrieve more initially for bm25
