@@ -55,30 +55,43 @@ async def main() -> None:
         document_file_paths_set.update(doc_paths_in_benchmark)
 
         # Sampling logic
+        sampled_tests = tests
         if 0 < MAX_TESTS_PER_BENCHMARK < len(tests):
             print(f"Sampling {MAX_TESTS_PER_BENCHMARK} tests from {benchmark_name} ({len(tests)} total)")
+            tests_with_indices = list(enumerate(tests))
             if SORT_BY_DOCUMENT:
-                tests = sorted(
-                    tests,
-                    key=lambda test: (
-                        random.seed(test.snippets[0].file_path),
+                tests_with_indices = sorted(
+                    tests_with_indices,
+                    key=lambda item: (  # item[1] is the test object
+                        random.seed(item[1].snippets[0].file_path),
                         random.random(),
                     )[1],
                 )
             else:
                 random.seed(benchmark_name + str(MAX_TESTS_PER_BENCHMARK))  # Seed for reproducibility
-                random.shuffle(tests)
-            tests = tests[:MAX_TESTS_PER_BENCHMARK]
+                random.shuffle(tests_with_indices)
 
+            # Take the sampled subset
+            sampled_tests_with_indices = tests_with_indices[:MAX_TESTS_PER_BENCHMARK]
+            # Unzip back into tests list
+            if sampled_tests_with_indices:
+                sampled_tests = [item[1] for item in sampled_tests_with_indices]  # Get just the test objects
+            else:
+                sampled_tests = []
+
+        # Update used document paths based on the sampled tests
         used_document_file_paths_set.update(
-             {snippet.file_path for test in tests for snippet in test.snippets}
+             {snippet.file_path for test in sampled_tests for snippet in test.snippets}
         )
-        for test in tests:
+        for test in sampled_tests:
             test.tags = [benchmark_name]
-        all_tests.extend(tests)
-        # Adjust weight based on the actual number of tests added
-        if tests:
-            weights.extend([weight / len(tests)] * len(tests))
+
+        all_tests.extend(sampled_tests)
+        # Assign correct per-test weight based on the number actually sampled and added
+        if sampled_tests:
+            num_sampled = len(sampled_tests)
+            per_test_weight = weight / num_sampled if num_sampled > 0 else 0
+            weights.extend([per_test_weight] * num_sampled)  # Weights list is now parallel to all_tests
         else:
             print(f"Warning: No tests selected for benchmark {benchmark_name} after sampling/filtering.")
 
@@ -93,13 +106,10 @@ async def main() -> None:
         full_path = f"./data/corpus/{document_file_path}"
         if not os.path.exists(full_path):
             print(f"Warning: Corpus file not found: {full_path}. Skipping.")
-            # Remove tests that rely on this missing document? Or let methods handle missing doc?
-            # For now, let it proceed, methods might handle missing doc during query.
             continue
         try:
             with open(full_path, encoding='utf-8') as f:
                 content = f.read()
-                # Basic content check (e.g., non-empty)
                 if not content.strip():
                     print(f"Warning: Corpus file is empty: {full_path}. Skipping.")
                     continue
@@ -108,15 +118,21 @@ async def main() -> None:
         except Exception as e:
             print(f"Error reading corpus file {full_path}: {e}")
 
-    # Filter tests to only include those whose documents were successfully loaded
+    # Filter tests (and weights) to only include those whose documents were successfully loaded
     original_test_count = len(benchmark.tests)
-    benchmark.tests = [
-        test for test in benchmark.tests
-        if all(snippet.file_path in loaded_corpus_paths for snippet in test.snippets)
-    ]
+    filtered_tests: list[QAGroundTruth] = []
+    filtered_weights: list[float] = []
+    for i, test in enumerate(benchmark.tests):
+        # Check if ALL required documents for this test are present in the loaded corpus
+        if all(snippet.file_path in loaded_corpus_paths for snippet in test.snippets):
+            filtered_tests.append(test)
+            filtered_weights.append(weights[i])
+
+    benchmark.tests = filtered_tests
+    weights = filtered_weights
+
     if len(benchmark.tests) != original_test_count:
-        print(f"Filtered out {original_test_count - len(benchmark.tests)} tests due to missing/empty corpus files.")
-        # Recalculate weights if tests were removed? For simplicity, keep original weights for now.
+        print(f"Filtered out {original_test_count - len(benchmark.tests)} tests (and their weights) due to missing/empty corpus files.")
 
     if not benchmark.tests:
         print("Error: No valid tests remaining after document loading and filtering. Exiting.")
@@ -200,8 +216,8 @@ async def main() -> None:
                     row[f"{benchmark_name}|recall"] = avg_recall
                     row[f"{benchmark_name}|precision"] = avg_precision
                     # Optional: print per-benchmark details
-                    # print(f"  {benchmark_name} Avg Recall: {100*avg_recall:.2f}%")
-                    # print(f"  {benchmark_name} Avg Precision: {100*avg_precision:.2f}%")
+                    print(f"  {benchmark_name} Avg Recall: {100*avg_recall:.2f}%")
+                    print(f"  {benchmark_name} Avg Precision: {100*avg_precision:.2f}%")
                 else:
                     # Assign NaN or None if no tests for this benchmark were run/valid
                     row[f"{benchmark_name}|recall"] = float('nan')
