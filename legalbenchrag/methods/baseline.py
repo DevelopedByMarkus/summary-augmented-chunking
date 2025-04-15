@@ -1,10 +1,9 @@
 import os
 import sqlite3
 import struct
-from typing import Literal, cast
+from typing import Literal, cast, List
 
-import sqlite_vec  # type: ignore
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import sqlite_vec
 from pydantic import BaseModel
 from tqdm import tqdm
 
@@ -21,6 +20,7 @@ from legalbenchrag.utils.ai import (
     ai_embedding,
     ai_rerank,
 )
+from legalbenchrag.utils.chunking import Chunk, get_chunks
 
 
 def serialize_f32(vector: list[float]) -> bytes:
@@ -32,8 +32,11 @@ SHOW_LOADING_BAR = True
 
 
 class ChunkingStrategy(BaseModel):
+    # Use strategy_name defined in chunking.py
     strategy_name: Literal["naive", "rcts"]
     chunk_size: int
+    # Add overlap config if rcts uses it
+    chunk_overlap_ratio: float = 0.0
 
 
 class RetrievalStrategy(BaseModel):
@@ -46,14 +49,16 @@ class RetrievalStrategy(BaseModel):
 
 
 class EmbeddingInfo(BaseModel):
-    document_id: str
+    """Stores metadata associated with a specific vector rowid."""
+    document_id: str  # file_path from Chunk
     span: tuple[int, int]
 
 
 class BaselineRetrievalMethod(RetrievalMethod):
     retrieval_strategy: RetrievalStrategy
     documents: dict[str, Document]
-    embedding_infos: list[EmbeddingInfo] | None
+    # This list maps sqlite rowid (implicit index) to metadata
+    embedding_infos: List[EmbeddingInfo] | None
     sqlite_db: sqlite3.Connection | None
     sqlite_db_file_path: str | None
 
@@ -71,134 +76,117 @@ class BaselineRetrievalMethod(RetrievalMethod):
         if self.sqlite_db_file_path is not None and os.path.exists(
             self.sqlite_db_file_path
         ):
-            os.remove(self.sqlite_db_file_path)
+            try:
+                os.remove(self.sqlite_db_file_path)
+            except OSError as e:
+                print(f"Warning: Could not remove baseline DB file: {e}")
             self.sqlite_db_file_path = None
 
     async def ingest_document(self, document: Document) -> None:
+        # Store the full document content for later text retrieval
         self.documents[document.file_path] = document
 
     async def sync_all_documents(self) -> None:
-        class Chunk(BaseModel):
-            document_id: str
-            span: tuple[int, int]
-            content: str
-
-        # Calculate chunks
-        chunks: list[Chunk] = []
-        for document_id, document in self.documents.items():
-            # Get chunks
-            chunk_size = self.retrieval_strategy.chunking_strategy.chunk_size
-            match self.retrieval_strategy.chunking_strategy.strategy_name:
-                case "naive":
-                    text_splits: list[str] = []
-                    for i in range(0, len(document.content), chunk_size):
-                        text_splits.append(document.content[i : i + chunk_size])
-                case "rcts":
-                    synthetic_data_splitter = RecursiveCharacterTextSplitter(
-                        separators=[
-                            "\n\n",
-                            "\n",
-                            "!",
-                            "?",
-                            ".",
-                            ":",
-                            ";",
-                            ",",
-                            " ",
-                            "",
-                        ],
-                        chunk_size=chunk_size,
-                        chunk_overlap=0,
-                        length_function=len,
-                        is_separator_regex=False,
-                        strip_whitespace=False,
-                    )
-                    text_splits = synthetic_data_splitter.split_text(document.content)
-            assert sum(len(text_split) for text_split in text_splits) == len(
-                document.content
+        # 1. Calculate chunks using the shared utility
+        print("Baseline: Calculating chunks...")
+        all_chunks: List[Chunk] = []
+        for document in self.documents.values():
+            chunks_for_doc = get_chunks(
+                document=document,
+                strategy_name=self.retrieval_strategy.chunking_strategy.strategy_name,
+                chunk_size=self.retrieval_strategy.chunking_strategy.chunk_size,
+                chunk_overlap_ratio=self.retrieval_strategy.chunking_strategy.chunk_overlap_ratio,
             )
-            assert "".join(text_splits) == document.content
+            all_chunks.extend(chunks_for_doc)
+        print(f"Baseline: Created {len(all_chunks)} chunks.")
 
-            # Get spans from chunks
-            prev_span: tuple[int, int] | None = None
-            for text_split in text_splits:
-                prev_index = prev_span[1] if prev_span is not None else 0
-                span = (prev_index, prev_index + len(text_split))
-                chunks.append(
-                    Chunk(
-                        document_id=document_id,
-                        span=span,
-                        content=text_split,
-                    )
-                )
-                prev_span = span
+        if not all_chunks:
+            print("Baseline: No chunks created, skipping embedding and indexing.")
+            self.embedding_infos = []
+            return
 
-        # Calculate embeddings
+        # Prepare list for metadata mapping (index will correspond to rowid)
+        self.embedding_infos = []
+
+        # 2. Calculate embeddings using the ai_embedding function
         progress_bar: tqdm | None = None
         if SHOW_LOADING_BAR:
             progress_bar = tqdm(
-                total=len(chunks), desc="Processing Embeddings", ncols=100
+                total=len(all_chunks), desc="Baseline: Processing Embeddings", ncols=100
             )
 
-        EMBEDDING_BATCH_SIZE = 2048
-        self.embedding_infos = []
-        for i in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
-            chunk_batch = chunks[i : i + EMBEDDING_BATCH_SIZE]
-            assert len(chunk_batch) > 0
-            embeddings = await ai_embedding(
-                self.retrieval_strategy.embedding_model,
-                [chunk.content for chunk in chunk_batch],
-                AIEmbeddingType.DOCUMENT,
-                callback=lambda: (progress_bar.update(1), None)[1]
-                if progress_bar
-                else None,
-            )
-            assert len(chunk_batch) == len(embeddings)
-            # Save the Info
-            if self.sqlite_db is None:
-                # random_id = str(uuid4())
-                self.sqlite_db_file_path = "./data/cache/baseline.db"
-                if os.path.exists(self.sqlite_db_file_path):
-                    os.remove(self.sqlite_db_file_path)
-                self.sqlite_db = sqlite3.connect(self.sqlite_db_file_path)
-                self.sqlite_db.enable_load_extension(True)
-                sqlite_vec.load(self.sqlite_db)
-                self.sqlite_db.enable_load_extension(False)
-                # Set RAM Usage and create vector table
-                self.sqlite_db.execute(f"PRAGMA mmap_size = {3*1024*1024*1024}")
-                self.sqlite_db.execute(
-                    f"CREATE VIRTUAL TABLE vec_items USING vec0(embedding float[{len(embeddings[0])}])"
-                )
+        # Define callback for progress update
+        def progress_callback():
+            if progress_bar:
+                progress_bar.update(1)
 
-            with self.sqlite_db as db:
-                insert_data = [
-                    (len(self.embedding_infos) + i, serialize_f32(embedding))
-                    for i, embedding in enumerate(embeddings)
-                ]
-                db.executemany(
-                    "INSERT INTO vec_items(rowid, embedding) VALUES (?, ?)",
-                    insert_data,
-                )
-                for chunk, embedding in zip(chunk_batch, embeddings):
-                    self.embedding_infos.append(
-                        EmbeddingInfo(
-                            document_id=chunk.document_id,
-                            span=chunk.span,
-                            embedding=embedding,
-                        )
-                    )
+        # Get embeddings for all chunk contents
+        chunk_contents = [chunk.content for chunk in all_chunks]
+        embeddings = await ai_embedding(
+            self.retrieval_strategy.embedding_model,
+            chunk_contents,
+            AIEmbeddingType.DOCUMENT,
+            callback=progress_callback,
+        )
+
         if progress_bar:
             progress_bar.close()
+
+        assert len(all_chunks) == len(embeddings), "Mismatch between chunks and embeddings count"
+
+        # 3. Store embeddings and metadata in SQLite-Vec
+        if self.sqlite_db is None:
+            # random_id = str(uuid4())  # Not needed if we always overwrite/delete
+            self.sqlite_db_file_path = f"./data/cache/baseline_{os.getpid()}.db"  # Add PID to avoid multi-process conflicts if run in parallel later
+            if os.path.exists(self.sqlite_db_file_path):
+                os.remove(self.sqlite_db_file_path)
+            self.sqlite_db = sqlite3.connect(self.sqlite_db_file_path)
+            self.sqlite_db.enable_load_extension(True)
+            sqlite_vec.load(self.sqlite_db)
+            self.sqlite_db.enable_load_extension(False)
+            # Set RAM Usage and create vector table
+            self.sqlite_db.execute(f"PRAGMA mmap_size = {3*1024*1024*1024}")  # 3GB RAM usage limit
+            self.sqlite_db.execute(
+                f"CREATE VIRTUAL TABLE vec_items USING vec0(embedding float[{len(embeddings[0])}])"
+            )
+
+        with self.sqlite_db as db:
+            insert_data = []
+            current_rowid = 0
+            for chunk, embedding in zip(all_chunks, embeddings):
+                # Add metadata to our mapping list BEFORE inserting, index matches future rowid
+                self.embedding_infos.append(
+                    EmbeddingInfo(
+                        document_id=chunk.file_path,
+                        span=chunk.span,
+                    )
+                )
+                # Prepare data for insertion (rowid will be index + 1) -> sqlite rowids start at 1 typically
+                insert_data.append(
+                    (current_rowid + 1, serialize_f32(embedding))
+                )
+                current_rowid += 1
+
+            # Insert into sqlite-vec
+            db.executemany(
+                # Let sqlite handle rowid auto-increment
+                "INSERT INTO vec_items(rowid, embedding) VALUES (?, ?)",
+                insert_data,
+            )
+
+        print(f"Baseline: Finished indexing {len(self.embedding_infos)} embeddings.")
 
     async def query(self, query: str) -> QueryResponse:
         if self.sqlite_db is None or self.embedding_infos is None:
             raise ValueError("Sync documents before querying!")
-        # Get TopK Embedding results
+
+        # 1. Get TopK Embedding results
         query_embedding = (
             await ai_embedding(
                 self.retrieval_strategy.embedding_model, [query], AIEmbeddingType.QUERY
             )
         )[0]
+
         rows = self.sqlite_db.execute(
             """
             SELECT
@@ -211,45 +199,60 @@ class BaselineRetrievalMethod(RetrievalMethod):
             """,
             [serialize_f32(query_embedding), self.retrieval_strategy.embedding_topk],
         ).fetchall()
-        indices = [cast(int, row[0]) for row in rows]
-        retrieved_embedding_infos = [self.embedding_infos[i] for i in indices]
 
-        # Rerank
-        if self.retrieval_strategy.rerank_model is not None:
-            reranked_indices = await ai_rerank(
+        # Get metadata using the rowid (adjusting for 0-based list index -> sqlite rowid starts at 1)
+        retrieved_indices = [cast(int, row[0]) - 1 for row in rows]  # Adjust to 0-based index
+        retrieved_metadatas = [self.embedding_infos[i] for i in retrieved_indices]
+        initial_texts = [self.get_embedding_info_text(meta) for meta in retrieved_metadatas]
+
+        # 2. Rerank if specified
+        final_metadatas = retrieved_metadatas
+        if self.retrieval_strategy.rerank_model is not None and initial_texts:
+            reranked_indices_map = await ai_rerank(
                 self.retrieval_strategy.rerank_model,
                 query,
-                texts=[
-                    self.get_embedding_info_text(embedding_info)
-                    for embedding_info in retrieved_embedding_infos
-                ],
+                texts=initial_texts,
+                top_k=self.retrieval_strategy.rerank_topk,
             )
-            retrieved_embedding_infos = [
-                retrieved_embedding_infos[i]
-                for i in reranked_indices[: self.retrieval_strategy.rerank_topk]
+            # The reranked indices refer to the order in `initial_texts`
+            final_metadatas = [
+                retrieved_metadatas[i] for i in reranked_indices_map
             ]
+            # No need to slice again by rerank_topk, ai_rerank already handles it
+            # MR: was: reranked_indices[: self.retrieval_strategy.rerank_topk]
 
-        # Get the top retrieval snippets, up until the token limit
+        # 3. Get the top retrieval snippets, up until the token limit
         remaining_tokens = self.retrieval_strategy.token_limit
         retrieved_snippets: list[RetrievedSnippet] = []
-        for i, embedding_info in enumerate(retrieved_embedding_infos):
+        for i, metadata in enumerate(final_metadatas):
             if remaining_tokens is not None and remaining_tokens <= 0:
                 break
-            span = embedding_info.span
+            # Use the span directly from the metadata
+            span = metadata.span
+            text_content = self.get_embedding_info_text(metadata) # Get text for length check
+            current_len = len(text_content)
+
+            final_span = span
             if remaining_tokens is not None:
-                span = (span[0], min(span[1], span[0] + remaining_tokens))
+                if current_len > remaining_tokens:
+                    # Truncate span if exceeding remaining tokens
+                    final_span = (span[0], span[0] + remaining_tokens)
+                    current_len = remaining_tokens  # Update length used
+                remaining_tokens -= current_len  # Deduct used length
+
             retrieved_snippets.append(
                 RetrievedSnippet(
-                    file_path=embedding_info.document_id,
-                    span=span,
-                    score=1.0 / (i + 1),
+                    file_path=metadata.document_id,
+                    span=final_span,
+                    score=1.0 / (i + 1),  # Simple rank-based score
                 )
             )
-            if remaining_tokens is not None:
-                remaining_tokens -= span[1] - span[0]
+
         return QueryResponse(retrieved_snippets=retrieved_snippets)
 
     def get_embedding_info_text(self, embedding_info: EmbeddingInfo) -> str:
+        """Retrieves the text content for a given EmbeddingInfo."""
+        # Use stored full documents
         return self.documents[embedding_info.document_id].content[
             embedding_info.span[0] : embedding_info.span[1]
         ]

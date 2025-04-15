@@ -4,7 +4,7 @@ import logging
 import os
 from collections.abc import Callable, Coroutine
 from enum import Enum
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, Dict, List
 
 import anthropic
 import cohere
@@ -19,14 +19,18 @@ from anthropic.types import MessageParam
 from openai import AsyncOpenAI, RateLimitError
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, computed_field
+from sentence_transformers import SentenceTransformer
 
 from legalbenchrag.utils.credentials import credentials
 
 logger = logging.getLogger("uvicorn")
 
+# --- Globals ---
+# Cache for loaded SentenceTransformer models to avoid reloading
+local_model_cache: Dict[str, Any] = {}
+
+
 # AI Types
-
-
 class AIModel(BaseModel):
     company: Literal["openai", "anthropic"]
     model: str
@@ -57,7 +61,7 @@ class AIMessage(BaseModel):
 
 
 class AIEmbeddingModel(BaseModel):
-    company: Literal["openai", "cohere", "voyageai"]
+    company: Literal["openai", "cohere", "voyageai", "huggingface"]
     model: str
 
     @computed_field  # type: ignore[misc]
@@ -72,6 +76,9 @@ class AIEmbeddingModel(BaseModel):
             case "voyageai":
                 # It says 300RPM but I can only get 30 out of it
                 return 1000000
+            case "huggingface":
+                # No external rate limit for local models
+                return float('inf')
 
     @computed_field  # type: ignore[misc]
     @property
@@ -84,6 +91,9 @@ class AIEmbeddingModel(BaseModel):
             case "voyageai":
                 # It says 300RPM but I can only get 30 out of it
                 return 30
+            case "huggingface":
+                # No external rate limit for local models
+                return float('inf')
 
     @computed_field  # type: ignore[misc]
     @property
@@ -95,6 +105,10 @@ class AIEmbeddingModel(BaseModel):
                 return 96
             case "voyageai":
                 return 128
+            case "huggingface":
+                # Sentence Transformers handles internal batching, this is more informational
+                # Or could be used by the caller if they want to manage batches passed to ai_embedding
+                return 64  # A reasonable default batch size suggestion
 
 
 class AIEmbeddingType(Enum):
@@ -194,8 +208,11 @@ def ai_num_tokens(model: AIModel | AIEmbeddingModel | AIRerankModel, s: str) -> 
             return num_tokens
         elif model.company == "voyageai":
             return get_ai_connection().voyageai_client.count_tokens([s], model.model)
+        elif model.company == "huggingface":
+            # Use simple estimate. if needed precisely: use tokenizer from SentenceTransformer model if loaded
+            return int(len(s) / 4)
     # Otherwise, estimate
-    logger.warning("Estimating Tokens!")
+    logger.warning(f"Estimating Tokens for model type {type(model)}!")
     return int(len(s) / 4)
 
 
@@ -375,6 +392,63 @@ def get_embeddings_cache_key(
     return key
 
 
+# --- Internal Synchronous HuggingFace Embedding Function ---
+def _encode_local_huggingface(
+    model_name: str,
+    texts: list[str],
+    embedding_type: AIEmbeddingType,
+    callback: Callable[[], None],
+    # trust_remote_code: bool = True # Hardcoded True
+) -> list[list[float]]:
+    """Loads and uses a SentenceTransformer model to encode texts synchronously."""
+    if SentenceTransformer is None:
+        raise ImportError("SentenceTransformer is not installed. Run `pip install sentence-transformers`.")
+
+    # Load model from cache or disk
+    if model_name not in local_model_cache:
+        logger.info(f"Loading local SentenceTransformer model: {model_name}")
+        # Always trust remote code as requested
+        local_model_cache[model_name] = SentenceTransformer(model_name, trust_remote_code=True)
+        logger.info(f"Finished loading {model_name}")
+    model: SentenceTransformer = local_model_cache[model_name]
+
+    # Handle document/query type (e.g., BGE models expect specific prefixes)
+    # This is a common pattern, but specific prefixes depend on the model.
+    # We might need a more configuration-driven way if supporting many models.
+    # Example for BGE:
+    texts_to_encode = texts
+    if "bge-" in model_name.lower():
+         if embedding_type == AIEmbeddingType.QUERY:
+             # BGE query prefix often mentioned in model cards (but check specific model)
+             # Some require a space after ':', some don't. Let's assume no space needed.
+             texts_to_encode = ["Represent this sentence for searching relevant passages: " + text for text in texts]
+             # For older BGE versions, it might just be adding a trailing space to the query.
+             # texts_to_encode = [text + " " for text in texts]
+         elif embedding_type == AIEmbeddingType.DOCUMENT:
+             # BGE document encoding usually doesn't require a prefix, but check model card.
+             pass # No prefix needed for documents based on common BGE usage
+
+    logger.debug(f"Encoding {len(texts_to_encode)} texts locally using {model_name}...")
+    embeddings = model.encode(
+        texts_to_encode,
+        show_progress_bar=False, # Set to True for console progress within the thread
+        batch_size=32 # Default batch size, adjust as needed
+    )
+    logger.debug(f"Finished local encoding with {model_name}.")
+
+    # Convert numpy array to list of lists
+    embeddings_list = cast(List[List[float]], embeddings.tolist())
+
+    # Call the callback *after* the whole batch is done in this sync function
+    # For finer-grained progress, SentenceTransformer's encode might need modification
+    # or we process in smaller loops here.
+    for _ in range(len(texts)): # Call callback once per input text for consistency with async path
+        callback()
+
+    return embeddings_list
+
+
+# --- Unified Embedding Function ---
 async def ai_embedding(
     model: AIEmbeddingModel,
     texts: list[str],
@@ -387,34 +461,39 @@ async def ai_embedding(
     # Callback (For tracking progress)
     callback: Callable[[], None] = lambda: None,
 ) -> list[list[float]]:
+    if not texts:
+        return []
+
     # Extract cache miss indices
     text_embeddings: list[list[float] | None] = [None] * len(texts)
+    indices_to_fetch = []
     for i, text in enumerate(texts):
         cache_key = get_embeddings_cache_key(model, text, embedding_type)
-        text_embeddings[i] = cache.get(cache_key)
-        if text_embeddings[i] is not None:
-            callback()
-    if not any(embedding is None for embedding in text_embeddings):
-        return cast(list[list[float]], text_embeddings)  # All needed embeddings were in cache
-    required_text_embeddings_indices = [
-        i for i in range(len(text_embeddings)) if text_embeddings[i] is None
-    ]  # Store all indices of which no embedding was found in the cache
+        cached_embedding = cache.get(cache_key)
+        if cached_embedding is not None:
+            text_embeddings[i] = cached_embedding
+            callback()  # Call callback even for cache hits
+        else:
+            indices_to_fetch.append(i)
 
-    # Recursively Batch if necessary
-    if len(required_text_embeddings_indices) > model.max_batch_len:
-        # Calculate embeddings in batches
+    if not indices_to_fetch:
+        return cast(list[list[float]], text_embeddings)  # All needed embeddings were in cache
+
+    required_texts = [texts[i] for i in indices_to_fetch]
+    if model.company != 'huggingface' and len(required_texts) > model.max_batch_len:
+        # Recursive Batching for APIs
         tasks: list[Coroutine[Any, Any, list[list[float]]]] = []
-        for i in range(0, len(required_text_embeddings_indices), model.max_batch_len):
-            batch_indices = required_text_embeddings_indices[
-                i : i + model.max_batch_len
-            ]
+        for i in range(0, len(indices_to_fetch), model.max_batch_len):
+            batch_indices = indices_to_fetch[i : i + model.max_batch_len]
+            batch_texts = [texts[idx] for idx in batch_indices]
             tasks.append(
                 ai_embedding(
                     model,
-                    [texts[i] for i in batch_indices],
+                    batch_texts,
                     embedding_type,
                     num_ratelimit_retries=num_ratelimit_retries,
                     backoff_algo=backoff_algo,
+                    # Pass callback down, it will be called for cache hits/misses in sub-calls
                     callback=callback,
                 )
             )
@@ -423,111 +502,108 @@ async def ai_embedding(
         for embeddings_list in preflattened_results:
             results.extend(embeddings_list)
         # Merge with cache hits
-        assert len(required_text_embeddings_indices) == len(results)
-        for i, embedding in zip(required_text_embeddings_indices, results):
+        assert len(indices_to_fetch) == len(results), f"Batch result length mismatch: expected {len(indices_to_fetch)}, got {len(results)}"
+        for i, embedding in zip(indices_to_fetch, results):
             text_embeddings[i] = embedding
-        assert all(embedding is not None for embedding in text_embeddings)
+            # Cache is handled within the recursive call, no need to set here
+        assert all(text_embeddings[i] is not None for i in indices_to_fetch)
         return cast(list[list[float]], text_embeddings)
 
-    num_tokens_input: int = sum(
-        [
-            ai_num_tokens(model, texts[index])
-            for index in required_text_embeddings_indices
-        ]
-    )
+    # --- Get Embeddings for Cache Misses (Single Batch) ---
+    embeddings_response: list[list[float]] | None = None
+    num_tokens_input = sum(ai_num_tokens(model, text) for text in required_texts)
 
-    input_texts = [texts[i] for i in required_text_embeddings_indices]
-    text_embeddings_response: list[list[float]] | None = None
-    match model.company:
-        case "openai":
-            for i in range(num_ratelimit_retries):
-                try:
-                    async with get_ai_connection().openai_ratelimit_semaphore:
-                        rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                        tpm = model.ratelimit_tpm * RATE_LIMIT_RATIO
-                        expected_wait = max(60.0 / rpm, num_tokens_input / (tpm / 60))
-                        await asyncio.sleep(expected_wait)
-                    response = (
-                        await get_ai_connection().openai_client.embeddings.create(
-                            input=input_texts,
-                            model=model.model,
-                        )
-                    )
-                    text_embeddings_response = [
-                        embedding.embedding for embedding in response.data
-                    ]
-                    break
-                except (
-                    openai.RateLimitError,
-                    openai.APIConnectionError,
-                    openai.APITimeoutError,
-                ):
-                    logger.warning("OpenAI RateLimitError")
-                    async with get_ai_connection().openai_ratelimit_semaphore:
-                        await asyncio.sleep(backoff_algo(i))
-            if text_embeddings_response is None:
-                raise AITimeoutError("Cannot overcome OpenAI RateLimitError")
-        case "cohere":
-            for i in range(num_ratelimit_retries):
-                try:
-                    async with get_ai_connection().cohere_ratelimit_semaphore:
-                        rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                        tpm = model.ratelimit_tpm * RATE_LIMIT_RATIO
-                        expected_wait = max(60.0 / rpm, num_tokens_input / (tpm / 60))
-                        await asyncio.sleep(expected_wait)
-                    result = await get_ai_connection().cohere_client.embed(
-                        texts=input_texts,
-                        model=model.model,
-                        input_type=(
-                            "search_document"
-                            if embedding_type == AIEmbeddingType.DOCUMENT
-                            else "search_query"
-                        ),
-                    )
-                    assert isinstance(result.embeddings, list)
-                    text_embeddings_response = result.embeddings
-                    break
-                except voyageai.error.RateLimitError:
-                    logger.warning("Cohere RateLimitError")
-                    async with get_ai_connection().cohere_ratelimit_semaphore:
-                        await asyncio.sleep(backoff_algo(i))
-            if text_embeddings_response is None:
-                raise AITimeoutError("Cannot overcome Cohere RateLimitError")
-        case "voyageai":
-            for i in range(num_ratelimit_retries):
-                try:
-                    async with get_ai_connection().voyageai_ratelimit_semaphore:
-                        rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                        tpm = model.ratelimit_tpm * RATE_LIMIT_RATIO
-                        expected_wait = max(60.0 / rpm, num_tokens_input / (tpm / 60))
-                        await asyncio.sleep(expected_wait)
-                    result = await get_ai_connection().voyageai_client.embed(
-                        input_texts,
-                        model=model.model,
-                        input_type=(
-                            "document"
-                            if embedding_type == AIEmbeddingType.DOCUMENT
-                            else "query"
-                        ),
-                    )
-                    assert isinstance(result.embeddings, list)
-                    text_embeddings_response = result.embeddings
-                    break
-                except voyageai.error.RateLimitError:
-                    logger.warning("VoyageAI RateLimitError")
-                    async with get_ai_connection().voyageai_ratelimit_semaphore:
-                        await asyncio.sleep(backoff_algo(i))
-            if text_embeddings_response is None:
-                raise AITimeoutError("Cannot overcome VoyageAI RateLimitError")
+    if model.company == 'huggingface':
+        # Run local encoding in a separate thread
+        embeddings_response = await asyncio.to_thread(
+            _encode_local_huggingface,
+            model.model,
+            required_texts,
+            embedding_type,
+            callback
+        )# Note: The callback within _encode_local_huggingface already accounts for progress.
 
-    assert len(text_embeddings_response) == len(required_text_embeddings_indices)
-    for index, embedding in zip(
-        required_text_embeddings_indices, text_embeddings_response
-    ):
-        cache_key = get_embeddings_cache_key(model, texts[index], embedding_type)
+    elif model.company == "openai":
+        for i in range(num_ratelimit_retries):
+            try:
+                async with get_ai_connection().openai_ratelimit_semaphore:
+                    rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
+                    tpm = model.ratelimit_tpm * RATE_LIMIT_RATIO
+                    expected_wait = max(60.0 / rpm if rpm != float('inf') else 0, num_tokens_input / (tpm / 60) if tpm != float('inf') else 0)
+                    await asyncio.sleep(expected_wait)
+                response = await get_ai_connection().openai_client.embeddings.create(
+                    input=required_texts, model=model.model
+                )
+                embeddings_response = [embedding.embedding for embedding in response.data]
+                for _ in range(len(required_texts)):
+                    callback()  # Call callback after success
+                break
+            except (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError) as e:
+                logger.warning(f"OpenAI Embedding Error: {e}")
+                if i == num_ratelimit_retries - 1:
+                    raise AITimeoutError("Cannot overcome OpenAI Embedding Error")
+                async with get_ai_connection().openai_ratelimit_semaphore:
+                    await asyncio.sleep(backoff_algo(i))
+
+    elif model.company == "cohere":
+        for i in range(num_ratelimit_retries):
+            try:
+                async with get_ai_connection().cohere_ratelimit_semaphore:
+                    rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
+                    tpm = model.ratelimit_tpm * RATE_LIMIT_RATIO
+                    expected_wait = max(60.0 / rpm if rpm != float('inf') else 0, num_tokens_input / (tpm / 60) if tpm != float('inf') else 0)
+                    await asyncio.sleep(expected_wait)
+                result = await get_ai_connection().cohere_client.embed(
+                    texts=required_texts, model=model.model,
+                    input_type="search_document" if embedding_type == AIEmbeddingType.DOCUMENT else "search_query"
+                )
+                embeddings_response = cast(List[List[float]], result.embeddings)
+                for _ in range(len(required_texts)):
+                    callback()
+                break
+            except (cohere.errors.TooManyRequestsError, httpx.RemoteProtocolError, httpx.ReadTimeout) as e:
+                logger.warning(f"Cohere Embedding Error: {e}")
+                if i == num_ratelimit_retries - 1:
+                    raise AITimeoutError("Cannot overcome Cohere Embedding Error")
+                async with get_ai_connection().cohere_ratelimit_semaphore:
+                    await asyncio.sleep(backoff_algo(i))
+
+    elif model.company == "voyageai":
+        for i in range(num_ratelimit_retries):
+            try:
+                async with get_ai_connection().voyageai_ratelimit_semaphore:
+                    rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
+                    tpm = model.ratelimit_tpm * RATE_LIMIT_RATIO
+                    expected_wait = max(60.0 / rpm if rpm != float('inf') else 0, num_tokens_input / (tpm / 60) if tpm != float('inf') else 0)
+                    await asyncio.sleep(expected_wait)
+                result = await get_ai_connection().voyageai_client.embed(
+                    required_texts, model=model.model,
+                    input_type="document" if embedding_type == AIEmbeddingType.DOCUMENT else "query"
+                )
+                embeddings_response = cast(List[List[float]], result.embeddings)
+                for _ in range(len(required_texts)):
+                    callback()
+                break
+            except voyageai.error.RateLimitError as e:
+                logger.warning(f"VoyageAI Embedding Error: {e}")
+                if i == num_ratelimit_retries - 1:
+                    raise AITimeoutError("Cannot overcome VoyageAI Embedding Error")
+                async with get_ai_connection().voyageai_ratelimit_semaphore:
+                    await asyncio.sleep(backoff_algo(i))
+
+    # --- Process results and update cache ---
+    if embeddings_response is None:
+        # This should only happen if all retries failed for an API call
+        raise AITimeoutError(f"Failed to get embeddings for model {model.model} after retries.")
+
+    assert len(embeddings_response) == len(indices_to_fetch), \
+        f"Mismatch between requested ({len(indices_to_fetch)}) and received ({len(embeddings_response)}) embeddings."
+
+    for i, embedding in zip(indices_to_fetch, embeddings_response):
+        cache_key = get_embeddings_cache_key(model, texts[i], embedding_type)
         cache.set(cache_key, embedding)
-        text_embeddings[index] = embedding
-        callback()
+        text_embeddings[i] = embedding
+
     assert all(embedding is not None for embedding in text_embeddings)
     return cast(list[list[float]], text_embeddings)
 
@@ -542,7 +618,6 @@ def get_rerank_cache_key(
         md5_hasher.update(md5_hasher.hexdigest().encode())
         md5_hasher.update(text.encode())
     texts_hash = md5_hasher.hexdigest()
-
     key = f"{model.company}||||{model.model}||||{top_k}||||{texts_hash}"
     return key
 
@@ -561,7 +636,6 @@ async def ai_rerank(
 ) -> list[int]:
     cache_key = get_rerank_cache_key(model, query, texts, top_k)
     cached_reranking = cache.get(cache_key)
-
     if cached_reranking is not None:
         return cached_reranking
 
@@ -572,48 +646,39 @@ async def ai_rerank(
                 try:
                     async with get_ai_connection().cohere_ratelimit_semaphore:
                         rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                        await asyncio.sleep(60.0 / rpm)
+                        await asyncio.sleep(60.0 / rpm if rpm != float('inf') else 0)
                     response = await get_ai_connection().cohere_client.rerank(
-                        model=model.model,
-                        query=query,
-                        documents=texts,
-                        top_n=top_k,
+                        model=model.model, query=query, documents=texts, top_n=top_k,
                     )
                     indices = [result.index for result in response.results]
                     break
-                except (
-                    cohere.errors.TooManyRequestsError,
-                    httpx.ConnectError,
-                    httpx.RemoteProtocolError,
-                ):
-                    logger.warning("Cohere RateLimitError")
+                except (cohere.errors.TooManyRequestsError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                    logger.warning(f"Cohere Rerank Error: {e}")
+                    if i == num_ratelimit_retries - 1:
+                        raise AITimeoutError("Cannot overcome Cohere Rerank Error")
                     async with get_ai_connection().cohere_ratelimit_semaphore:
                         await asyncio.sleep(backoff_algo(i))
             if indices is None:
-                raise AITimeoutError("Cannot overcome Cohere RateLimitError")
+                raise AITimeoutError("Cannot overcome Cohere Rerank Error")
+
         case "voyageai":
             for i in range(num_ratelimit_retries):
                 try:
                     async with get_ai_connection().voyageai_ratelimit_semaphore:
                         rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                        await asyncio.sleep(60.0 / rpm)
-                    voyageai_response = (
-                        await get_ai_connection().voyageai_client.rerank(
-                            query=query,
-                            documents=texts,
-                            model=model.model,
-                            top_k=top_k,
-                        )
+                        await asyncio.sleep(60.0 / rpm if rpm != float('inf') else 0)
+                    voyageai_response = await get_ai_connection().voyageai_client.rerank(
+                         query=query, documents=texts, model=model.model, top_k=top_k,
                     )
-                    indices = [
-                        int(result.index) for result in voyageai_response.results
-                    ]
+                    indices = [int(result.index) for result in voyageai_response.results]
                     break
-                except voyageai.error.RateLimitError:
-                    logger.warning("VoyageAI RateLimitError")
+                except voyageai.error.RateLimitError as e:
+                    logger.warning(f"VoyageAI Rerank Error: {e}")
+                    if i == num_ratelimit_retries - 1: raise AITimeoutError("Cannot overcome VoyageAI Rerank Error")
                     async with get_ai_connection().voyageai_ratelimit_semaphore:
                         await asyncio.sleep(backoff_algo(i))
             if indices is None:
-                raise AITimeoutError("Cannot overcome VoyageAI RateLimitError")
+                raise AITimeoutError("Cannot overcome VoyageAI Rerank Error")
+
     cache.set(cache_key, indices)
     return indices
