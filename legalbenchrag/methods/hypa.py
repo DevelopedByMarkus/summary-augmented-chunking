@@ -15,6 +15,7 @@ from llama_index.embeddings.cohere import CohereEmbedding
 from llama_index.embeddings.voyageai import VoyageEmbedding
 
 from pydantic import BaseModel
+from tqdm.asyncio import tqdm
 
 from legalbenchrag.benchmark_types import (
     Document as BenchmarkDocument,
@@ -24,8 +25,8 @@ from legalbenchrag.benchmark_types import (
 )
 from legalbenchrag.utils.ai import (
     AIEmbeddingModel,
-    # AIEmbeddingType,
-    # ai_embedding,
+    AIEmbeddingType,
+    ai_embedding,
 )
 # Import new chunking utility
 from legalbenchrag.utils.chunking import Chunk, get_chunks
@@ -150,7 +151,7 @@ class HypaRetrievalMethod(RetrievalMethod):
         self.documents[document.file_path] = document
 
     async def sync_all_documents(self) -> None:
-        """Process documents, create nodes, build indices using shared chunking and configured embedder."""
+        """Process documents, create nodes with cached embeddings, build indices."""
         print("HyPA: Calculating chunks...")
         all_chunks: List[Chunk] = []
         for document in self.documents.values():
@@ -168,17 +169,31 @@ class HypaRetrievalMethod(RetrievalMethod):
             self.nodes = []
             return
 
-        # 1. Set the global LlamaIndex embedding model for this strategy run
-        # This needs to happen *before* index construction.
-        print("HyPA: Setting global LlamaIndex embedding model...")
-        Settings.embed_model = self._get_llama_embed_model()
-        # Optional: Set global chunk size if needed elsewhere by LlamaIndex internals, though we provide nodes directly.
-        # Settings.chunk_size = self.strategy.chunk_size
+        # 1. Fetch embeddings using ai_embedding (utilizes cache)
+        chunk_contents = [chunk.content for chunk in all_chunks]
+        model_config = self.strategy.embedding_model
 
-        # 2. Convert Chunks to LlamaIndex TextNodes
-        print("HyPA: Creating LlamaIndex TextNodes from chunks...")
+        # Setup progress bar using tqdm.asyncio
+        pbar = tqdm(total=len(chunk_contents), desc="HyPA Embeddings", ncols=100)
+
+        def progress_callback():
+            pbar.update(1)
+
+        embeddings = await ai_embedding(
+            model=model_config,
+            texts=chunk_contents,
+            embedding_type=AIEmbeddingType.DOCUMENT,
+            callback=progress_callback,
+        )
+        pbar.close()
+
+        if len(embeddings) != len(all_chunks):
+            raise ValueError(f"HyPA Error: Mismatch between number of chunks ({len(all_chunks)}) and obtained embeddings ({len(embeddings)}).")
+
+        # 2. Create LlamaIndex TextNodes with pre-computed embeddings
+        print("HyPA: Creating LlamaIndex TextNodes with pre-computed embeddings...")
         self.nodes = []
-        for i, chunk in enumerate(all_chunks):
+        for i, (chunk, embedding) in enumerate(zip(all_chunks, embeddings)):
             # Create a unique node ID based on file and span
             node_id = f"{chunk.file_path}_{chunk.span[0]}_{chunk.span[1]}"
             node = TextNode(
@@ -191,15 +206,20 @@ class HypaRetrievalMethod(RetrievalMethod):
                 # Directly set start/end char indices on the node
                 start_char_idx=chunk.span[0],
                 end_char_idx=chunk.span[1],
+                embedding=embedding,  # <--- Pass the pre-fetched embedding here
                 # Ensure relationships are clear if needed, default is usually okay
                 # relationships={...}
             )
             self.nodes.append(node)
-        print(f"HyPA: Created {len(self.nodes)} TextNodes.")
+        print(f"HyPA: Created {len(self.nodes)} TextNodes with embeddings.")
 
-        # 3. Build In-Memory Vector Index using the TextNodes
-        print("HyPA: Building vector index...")
-        # Pass nodes directly, LlamaIndex will use Settings.embed_model
+        # 3. Set the global LlamaIndex embedding model (likely needed for query time)
+        print("HyPA: Setting global LlamaIndex embedding model (for query time)...")
+        Settings.embed_model = self._get_llama_embed_model()
+
+        # 4. Build In-Memory Vector Index using the TextNodes with pre-computed embeddings
+        print("HyPA: Building vector index from nodes with pre-computed embeddings...")
+        # Pass nodes directly, LlamaIndex should use the provided embeddings
         self.vector_index = VectorStoreIndex(
             self.nodes,
             show_progress=True,
@@ -207,7 +227,7 @@ class HypaRetrievalMethod(RetrievalMethod):
         )
         print("HyPA: Vector index built.")
 
-        # 4. Build BM25 Retriever using the TextNodes
+        # 5. Build BM25 Retriever using the TextNodes
         print("HyPA: Building BM25 retriever...")
         self.bm25_retriever = BM25Retriever.from_defaults(
             nodes=self.nodes,  # Use the same nodes
@@ -219,8 +239,8 @@ class HypaRetrievalMethod(RetrievalMethod):
         """Perform HyPA retrieval: vector + bm25 + fusion."""
         if self.vector_index is None or self.bm25_retriever is None or self.nodes is None:
             # Handle case where sync didn't create nodes
-            if not self.nodes:
-                print("HyPA Query: No nodes available for querying. Returning empty response.")
+            if self.nodes is not None and not self.nodes:  # Check if nodes is an empty list
+                print("HyPA Query: No nodes available for querying (list is empty). Returning empty response.")
                 return QueryResponse(retrieved_snippets=[])
             raise ValueError("Indices not synchronized. Call sync_all_documents first.")
 

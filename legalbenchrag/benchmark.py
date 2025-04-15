@@ -21,7 +21,7 @@ benchmark_name_to_weight: dict[str, float] = {
 }
 
 # --- Sampling Settings ---
-MAX_TESTS_PER_BENCHMARK = 5
+MAX_TESTS_PER_BENCHMARK = 25
 SORT_BY_DOCUMENT = True  # Keep True for faster ingestion during testing
 
 
@@ -185,8 +185,8 @@ async def main() -> None:
 
             # Save individual results
             result_filename = f"{benchmark_path}/{i}_{row.get('method', 'unknown')}_{row.get('embedding_model_name', 'unknown').replace('/','_')}.json"
-            with open(result_filename, "w") as f:
-                f.write(benchmark_result.model_dump_json(indent=2)) # Use indent=2 for smaller files
+            with open(result_filename, "w", encoding='utf-8') as f:
+                f.write(benchmark_result.model_dump_json(indent=2))  # Use indent=2 for smaller files
 
             # Add metrics to the summary row
             row["recall"] = benchmark_result.avg_recall
