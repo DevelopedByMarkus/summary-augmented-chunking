@@ -32,10 +32,13 @@ def download_shared_folder(shared_link, local_path, subpath=""):
 
             if isinstance(entry, dropbox.files.FileMetadata):
                 local_file_path = os.path.join(local_path, sanitized_name)
+
+                if os.path.exists(local_file_path):
+                    print(f"Skipping (already exists): {local_file_path}")
+                    continue
+
                 print(f"Downloading: {entry.name} -> {local_file_path}")
-
                 path_in_shared = f"/{subpath}/{entry.name}" if subpath else f"/{entry.name}"
-
                 _, res = dbx.sharing_get_shared_link_file(
                     url=shared_link,
                     path=path_in_shared
