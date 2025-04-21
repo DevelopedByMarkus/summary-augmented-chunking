@@ -4,6 +4,7 @@ import os
 import random
 import pandas as pd
 import re
+import math
 
 from legalbenchrag.benchmark_types import Benchmark, Document, QAGroundTruth, RetrievalMethod
 # Import Baseline components
@@ -241,24 +242,40 @@ async def main() -> None:
             # Add metrics to the summary row
             row["recall"] = benchmark_result.avg_recall
             row["precision"] = benchmark_result.avg_precision
+            row["f1_score"] = benchmark_result.avg_f1_score
 
             # Per-benchmark metrics
             for benchmark_name in benchmark_name_to_weight:
-                # Only calculate if tests for this benchmark exist in the final set
                 if any(benchmark_name in qa_result.qa_gt.tags for qa_result in benchmark_result.qa_result_list):
                     avg_recall, avg_precision = benchmark_result.get_avg_recall_and_precision(benchmark_name)
                     row[f"{benchmark_name}|recall"] = avg_recall
                     row[f"{benchmark_name}|precision"] = avg_precision
-                    # Optional: print per-benchmark details
-                    print(f"  {benchmark_name} Avg Recall: {100*avg_recall:.2f}%")
-                    print(f"  {benchmark_name} Avg Precision: {100*avg_precision:.2f}%")
-                else:
-                    # Assign NaN or None if no tests for this benchmark were run/valid
+                    # Calculate per-benchmark F1 (handle division by zero and NaN)
+                    # Check explicitly for float type AND NaN values before calculating F1
+                    if isinstance(avg_precision, float) and isinstance(avg_recall, float) and not (
+                            math.isnan(avg_precision) or math.isnan(avg_recall)):
+                        if avg_precision + avg_recall == 0:
+                            avg_f1_score = 0.0
+                            row[f"{benchmark_name}|f1_score"] = avg_f1_score
+                        else:
+                            avg_f1_score = 2 * (avg_precision * avg_recall) / (avg_precision + avg_recall)
+                            row[f"{benchmark_name}|f1_score"] = avg_f1_score
+                    else:  # Handle NaN case where P or R is NaN
+                        avg_f1_score = 0.0  # must assign float to avoid error in print
+                        row[f"{benchmark_name}|f1_score"] = float('nan')
+                    # Per benchmark results:
+                    print(f"  {benchmark_name} Avg Recall: {100 * avg_recall:.2f}%")
+                    print(f"  {benchmark_name} Avg Precision: {100 * avg_precision:.2f}%")
+                    print(f"  {benchmark_name} Avg F1 Score: {100 * avg_f1_score:.2f}%")
+
+                else:  # If no tests for this benchmark ran
                     row[f"{benchmark_name}|recall"] = float('nan')
                     row[f"{benchmark_name}|precision"] = float('nan')
+                    row[f"{benchmark_name}|f1_score"] = float('nan')
 
-            print(f"Overall Avg Recall: {100*benchmark_result.avg_recall:.2f}%")
-            print(f"Overall Avg Precision: {100*benchmark_result.avg_precision:.2f}%")
+            print(f"Overall Avg Recall: {100 * benchmark_result.avg_recall:.2f}%")
+            print(f"Overall Avg Precision: {100 * benchmark_result.avg_precision:.2f}%")
+            print(f"Overall Avg F1-Score: {100 * benchmark_result.avg_f1_score:.2f}%")
             rows.append(row)
 
         except Exception as e:
@@ -270,6 +287,7 @@ async def main() -> None:
             # Add a row indicating failure
             row["recall"] = "ERROR"
             row["precision"] = "ERROR"
+            row["f1_score"] = "ERROR"
             rows.append(row)
             # Optional: decide whether to continue with other benchmarks or stop
             # continue # Continue to next strategy
@@ -279,19 +297,22 @@ async def main() -> None:
     if rows:
         # Define expected columns based on union of possible keys
         all_keys = set(key for row in rows for key in row.keys())
-        # Define a sensible order
+        # Adjust sorting key slightly to place F1 score alongside P and R
         ordered_columns = sorted(list(all_keys), key=lambda x: (
-             0 if x=='i' else
-             1 if x=='method' else
-             2 if x=='chunk' in x else
-             3 if x=='embedding' in x else
-             4 if x=='rerank' in x or x=='bm25' in x or x=='fusion' in x else
-             5 if x=='recall' or x=='precision' else # Overall first
-             6 # Per-benchmark metrics last
+            0 if x == 'i' else
+            1 if x == 'method' else
+            2 if x == 'chunk' in x else
+            3 if x == 'embedding' in x else
+            4 if x == 'rerank' in x or x == 'bm25' in x or x == 'fusion' in x else
+            # Group main overall scores together
+            5 if x in ('recall', 'precision', 'f1_score') else
+            # Per-benchmark metrics last
+            6
         ))
         # Ensure main metrics are present
         if 'recall' not in ordered_columns: ordered_columns.append('recall')
         if 'precision' not in ordered_columns: ordered_columns.append('precision')
+        if 'f1_score' not in ordered_columns: ordered_columns.append('f1_score')
 
         df = pd.DataFrame(rows)
         # Reindex to ensure all columns are present and in order, fill missing with NaN
