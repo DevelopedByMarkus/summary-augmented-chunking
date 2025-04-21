@@ -1,8 +1,19 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+import os
+import re
 
 from pydantic import BaseModel, computed_field, model_validator
 from typing_extensions import Self
+
+# Define characters typically illegal in Windows filenames and replacement
+ILLEGAL_FILENAME_CHARS = r'[<>:"|?*]'
+REPLACEMENT_CHAR = '_'
+
+
+def sanitize_filename(filename: str) -> str:
+    """Replaces characters illegal in Windows filenames with underscores."""
+    return re.sub(ILLEGAL_FILENAME_CHARS, REPLACEMENT_CHAR, filename)
 
 
 # max_bridge_gap_len will merge spans that are within max_bridge_gap_len characters of eachother.
@@ -28,8 +39,47 @@ class Snippet(BaseModel):
     @computed_field  # type: ignore[misc]
     @property
     def answer(self) -> str:
-        with open(f"./data/corpus/{self.file_path}", encoding='utf-8') as f:
+        # Logic to find the actual file path (original or sanitized) for reading
+        original_full_path = f"./data/corpus/{self.file_path}"
+        sanitized_file_path = sanitize_filename(self.file_path)
+        sanitized_full_path = f"./data/corpus/{sanitized_file_path}"
+
+        if os.path.exists(original_full_path):
+            path_to_read = original_full_path
+        elif os.path.exists(sanitized_full_path):
+            path_to_read = sanitized_full_path
+        else:
+            # This *shouldn't* happen if benchmark.py filtering works correctly,
+            # as only loadable documents should result in runnable tests.
+            # If it does, it signals an inconsistency.
+            raise FileNotFoundError(
+                f"FATAL: Neither original '{original_full_path}' nor sanitized "
+                f"'{sanitized_full_path}' found for Snippet during serialization. "
+                f"File path '{self.file_path}' was expected to be loadable based on benchmark filtering."
+            )
+
+        with open(path_to_read, encoding='utf-8') as f:
             return f.read()[self.span[0] : self.span[1]]
+
+
+def validate_snippet_list(snippets: Sequence[Snippet]) -> None:
+    snippets_by_file_path: dict[str, list[Snippet]] = {}
+    for snippet in snippets:
+        if snippet.file_path not in snippets_by_file_path:
+            snippets_by_file_path[snippet.file_path] = [snippet]
+        else:
+            snippets_by_file_path[snippet.file_path].append(snippet)
+
+    for _file_path, snippets_list in snippets_by_file_path.items(): # Renamed variable
+        # Sort snippets by start span before checking for overlap
+        sorted_snippets = sorted(snippets_list, key=lambda x: x.span[0])
+        for i in range(1, len(sorted_snippets)):
+            # Allow spans to touch (end == start), but not overlap (end > start)
+            if sorted_snippets[i - 1].span[1] > sorted_snippets[i].span[0]:
+                raise ValueError(
+                    f"Spans are not disjoint for file '{_file_path}'! "
+                    f"{sorted_snippets[i - 1].span} VS {sorted_snippets[i].span}"
+                )
 
 
 def validate_snippet_list(snippets: Sequence[Snippet]) -> None:

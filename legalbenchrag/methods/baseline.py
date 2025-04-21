@@ -134,6 +134,8 @@ class BaselineRetrievalMethod(RetrievalMethod):
 
         assert len(all_chunks) == len(embeddings), "Mismatch between chunks and embeddings count"
 
+        print(f"Baseline: Start indexing embeddings...")
+
         # 3. Store embeddings and metadata in SQLite-Vec
         if self.sqlite_db is None:
             # random_id = str(uuid4())  # Not needed if we always overwrite/delete

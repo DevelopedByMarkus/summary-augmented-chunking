@@ -3,6 +3,7 @@ import datetime as dt
 import os
 import random
 import pandas as pd
+import re
 
 from legalbenchrag.benchmark_types import Benchmark, Document, QAGroundTruth, RetrievalMethod
 # Import Baseline components
@@ -23,6 +24,15 @@ benchmark_name_to_weight: dict[str, float] = {
 # --- Sampling Settings ---
 MAX_TESTS_PER_BENCHMARK = 194
 SORT_BY_DOCUMENT = True  # Keep True for faster ingestion during testing
+
+# Define characters typically illegal in Windows filenames and replacement
+ILLEGAL_FILENAME_CHARS = r'[<>:"|?*]'
+REPLACEMENT_CHAR = '_'
+
+
+def sanitize_filename(filename: str) -> str:
+    """Replaces characters illegal in Windows filenames with underscores."""
+    return re.sub(ILLEGAL_FILENAME_CHARS, REPLACEMENT_CHAR, filename)
 
 
 async def main() -> None:
@@ -99,24 +109,48 @@ async def main() -> None:
     print(f"Total tests selected across all benchmarks: {len(benchmark.tests)}")
 
     # --- Create Corpus ---
+    # --- START MODIFIED SECTION ---
     corpus_docs_to_load = used_document_file_paths_set if SORT_BY_DOCUMENT else document_file_paths_set
     corpus: list[Document] = []
-    loaded_corpus_paths = set()
+    loaded_corpus_paths = set()  # Stores the ORIGINAL file paths that were successfully loaded
+
+    print(f"Attempting to load {len(corpus_docs_to_load)} required corpus documents...")
     for document_file_path in sorted(corpus_docs_to_load):
-        full_path = f"./data/corpus/{document_file_path}"
-        if not os.path.exists(full_path):
-            print(f"Warning: Corpus file not found: {full_path}. Skipping.")
+        original_full_path = f"./data/corpus/{document_file_path}"
+        sanitized_file_path = sanitize_filename(document_file_path)
+        sanitized_full_path = f"./data/corpus/{sanitized_file_path}"
+
+        # Prefer the original path if it exists
+        if os.path.exists(original_full_path):
+            path_to_read = original_full_path
+        # Otherwise, try the sanitized path
+        elif os.path.exists(sanitized_full_path):
+            path_to_read = sanitized_full_path
+            if original_full_path != sanitized_full_path:
+                # print(f"Info: Loading '{document_file_path}' via sanitized path '{sanitized_file_path}'")
+                pass
+        else:
+            # If neither exists, issue warning for the original path and skip
+            print(
+                f"Warning: Corpus file not found at original path '{original_full_path}' or sanitized path '{sanitized_full_path}'. Skipping.")
             continue
+
+        # Try reading the determined path
         try:
-            with open(full_path, encoding='utf-8') as f:
+            with open(path_to_read, encoding='utf-8') as f:
                 content = f.read()
                 if not content.strip():
-                    print(f"Warning: Corpus file is empty: {full_path}. Skipping.")
+                    print(
+                        f"Warning: Corpus file '{path_to_read}' (for original '{document_file_path}') is empty. Skipping.")
                     continue
+                # IMPORTANT: Store the Document with the ORIGINAL file path from the benchmark data
                 corpus.append(Document(file_path=document_file_path, content=content))
+                # IMPORTANT: Add the ORIGINAL file path to the set of loaded paths
                 loaded_corpus_paths.add(document_file_path)
         except Exception as e:
-            print(f"Error reading corpus file {full_path}: {e}")
+            print(f"Error reading corpus file {path_to_read} (intended for '{document_file_path}'): {e}")
+
+    print(f"Successfully loaded {len(loaded_corpus_paths)} corpus documents.")
 
     # Filter tests (and weights) to only include those whose documents were successfully loaded
     original_test_count = len(benchmark.tests)

@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Coroutine
 from typing import Any
+from tqdm import tqdm
 
 from pydantic import BaseModel, computed_field, model_validator
 from typing_extensions import Self
@@ -120,16 +121,35 @@ async def run_benchmark(
     await retrieval_method.sync_all_documents()
 
     # Run the benchmark
+    # Create a tqdm progress bar instance
+    pbar = tqdm(total=len(qa_gt_list), desc="Running Queries", ncols=100)
+
     async def run_query(qa_gt: QAGroundTruth) -> QAResult:
         query_response = await retrieval_method.query(qa_gt.query)
         return QAResult(
             qa_gt=qa_gt, retrieved_snippets=query_response.retrieved_snippets
         )
 
+    # Define a wrapper coroutine to run the query and update the progress bar
+    async def run_query_with_progress(qa_gt: QAGroundTruth) -> QAResult:
+        try:
+            result = await run_query(qa_gt)
+            return result
+        finally:
+            # Ensure the progress bar updates even if an error occurs in run_query
+            pbar.update(1)
+
+    # Create the list of tasks using the wrapper
     tasks: list[Coroutine[Any, Any, QAResult]] = [
-        run_query(qa_gt) for qa_gt in qa_gt_list
+        run_query_with_progress(qa_gt) for qa_gt in qa_gt_list
     ]
-    results = await asyncio.gather(*tasks)
+
+    # Run the benchmark queries concurrently using asyncio.gather (preserves order)
+    try:
+        results = await asyncio.gather(*tasks)
+    finally:
+        # Ensure the progress bar is closed even if gather is cancelled or fails
+        pbar.close()
 
     await retrieval_method.cleanup()
 

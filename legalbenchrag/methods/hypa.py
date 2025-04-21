@@ -222,7 +222,7 @@ class HypaRetrievalMethod(RetrievalMethod):
         # Pass nodes directly, LlamaIndex should use the provided embeddings
         self.vector_index = VectorStoreIndex(
             self.nodes,
-            show_progress=True,
+            show_progress=False,
             # service_context=None # Deprecated, use Settings
         )
         print("HyPA: Vector index built.")
