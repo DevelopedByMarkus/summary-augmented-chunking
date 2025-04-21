@@ -21,7 +21,7 @@ benchmark_name_to_weight: dict[str, float] = {
 }
 
 # --- Sampling Settings ---
-MAX_TESTS_PER_BENCHMARK = 25
+MAX_TESTS_PER_BENCHMARK = 194
 SORT_BY_DOCUMENT = True  # Keep True for faster ingestion during testing
 
 
