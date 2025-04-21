@@ -9,8 +9,13 @@ class AICredentials(BaseModel):
     voyageai_api_key: SecretStr
 
 
+class DropboxCredentials(BaseModel):
+    token: SecretStr
+
+
 class Credentials(BaseModel):
     ai: AICredentials
+    dropbox: DropboxCredentials
 
 
 with open("./credentials/credentials.toml", "rb") as credentials_file:
