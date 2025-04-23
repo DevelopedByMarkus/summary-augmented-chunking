@@ -6,6 +6,7 @@ from collections.abc import Callable, Coroutine
 from enum import Enum
 from typing import Any, Literal, cast, Dict, List
 
+import torch
 import anthropic
 import cohere
 import diskcache as dc
@@ -398,18 +399,30 @@ def _encode_local_huggingface(
     texts: list[str],
     embedding_type: AIEmbeddingType,
     callback: Callable[[], None],
-    # trust_remote_code: bool = True # Hardcoded True
+    trust_remote_code: bool = True
 ) -> list[list[float]]:
     """Loads and uses a SentenceTransformer model to encode texts synchronously."""
     if SentenceTransformer is None:
         raise ImportError("SentenceTransformer is not installed. Run `pip install sentence-transformers`.")
 
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
     # Load model from cache or disk
     if model_name not in local_model_cache:
-        logger.info(f"Loading local SentenceTransformer model: {model_name}")
-        # Always trust remote code as requested
-        local_model_cache[model_name] = SentenceTransformer(model_name, trust_remote_code=True)
-        logger.info(f"Finished loading {model_name}")
+        logger.info(f"Loading local SentenceTransformer model: {model_name} onto device: {device}")
+        try:
+            # Pass the determined device to the constructor
+            local_model_cache[model_name] = SentenceTransformer(
+                model_name,
+                trust_remote_code=trust_remote_code,
+                device=device
+            )
+            logger.info(f"HuggingFace: Finished loading {model_name}")
+        except Exception as e:
+            # Catch potential loading errors (e.g., out of memory)
+            logger.error(f"HuggingFace: Failed to load model {model_name} onto device {device}: {e}")
+            raise RuntimeError(f"Failed to load SentenceTransformer model {model_name}") from e
+
     model: SentenceTransformer = local_model_cache[model_name]
 
     # Handle document/query type (e.g., BGE models expect specific prefixes)
