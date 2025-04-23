@@ -1,13 +1,14 @@
 import dropbox
 import os
 import re
+from pathlib import Path
 from legalbenchrag.utils.credentials import credentials
 
 # Dropbox shared link
 SHARED_LINK = "https://www.dropbox.com/scl/fo/r7xfa5i3hdsbxex1w6amw/AID389Olvtm-ZLTKAPrw6k4?rlkey=5n8zrbk4c08lbit3iiexofmwg&st=0hu354cq&dl=0"
 
 # Local path to download into
-LOCAL_DOWNLOAD_PATH = r"C:\dev\LLM4Law\legalbenchrag\data"
+LOCAL_DOWNLOAD_PATH = Path("./data")
 
 # Load token
 DROPBOX_ACCESS_TOKEN = credentials.dropbox.token.get_secret_value()
