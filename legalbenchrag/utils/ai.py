@@ -2,11 +2,11 @@ import asyncio
 import hashlib
 import logging
 import os
+import torch
 from collections.abc import Callable, Coroutine
 from enum import Enum
 from typing import Any, Literal, cast, Dict, List
 
-import torch
 import anthropic
 import cohere
 import diskcache as dc
@@ -20,7 +20,7 @@ from anthropic.types import MessageParam
 from openai import AsyncOpenAI, RateLimitError
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, computed_field
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from legalbenchrag.utils.credentials import credentials
 
@@ -29,6 +29,8 @@ logger = logging.getLogger("uvicorn")
 # --- Globals ---
 # Cache for loaded SentenceTransformer models to avoid reloading
 local_model_cache: Dict[str, Any] = {}
+# Cache for loaded CrossEncoder models
+local_reranker_cache: Dict[str, Any] = {}
 
 
 # AI Types
@@ -118,7 +120,7 @@ class AIEmbeddingType(Enum):
 
 
 class AIRerankModel(BaseModel):
-    company: Literal["cohere", "voyageai"]
+    company: Literal["cohere", "voyageai", "huggingface"]
     model: str
 
     @computed_field  # type: ignore[misc]
@@ -130,6 +132,9 @@ class AIRerankModel(BaseModel):
             case "voyageai":
                 # It says 100RPM but I can only get 60 out of it
                 return 60
+            case "huggingface":
+                # Local models have no external rate limit
+                return float('inf')
 
 
 # Cache
@@ -213,6 +218,10 @@ def ai_num_tokens(model: AIModel | AIEmbeddingModel | AIRerankModel, s: str) -> 
             # Use simple estimate. if needed precisely: use tokenizer from SentenceTransformer model if loaded
             return int(len(s) / 4)
     # Otherwise, estimate
+    # Add estimate for local rerankers if needed, though token count isn't usually the limiting factor
+    if isinstance(model, AIRerankModel) and model.company == 'huggingface':
+        return int(len(s) / 4)
+
     logger.warning(f"Estimating Tokens for model type {type(model)}!")
     return int(len(s) / 4)
 
@@ -635,6 +644,50 @@ def get_rerank_cache_key(
     return key
 
 
+# --- Internal Synchronous HuggingFace Reranking Function ---
+def _rerank_local_huggingface(
+    model_name: str,
+    query: str,
+    texts: list[str],
+    top_k: int | None = None
+) -> list[int]:
+    """Loads and uses a CrossEncoder model to rerank texts synchronously."""
+    if CrossEncoder is None:
+        raise ImportError("CrossEncoder (part of sentence-transformers) is not installed. Run `pip install sentence-transformers`.")
+
+    # Load model from cache or disk
+    if model_name not in local_reranker_cache:
+        logger.info(f"Loading local CrossEncoder model: {model_name}")
+        # CrossEncoder loads from HF Hub, uses cache automatically
+        # Specify trust_remote_code=True if needed for the specific model
+        local_reranker_cache[model_name] = CrossEncoder(model_name, trust_remote_code=True)
+        logger.info(f"Finished loading {model_name}")
+    model: CrossEncoder = local_reranker_cache[model_name]
+
+    # Prepare input pairs for the cross-encoder
+    input_pairs = [(query, text) for text in texts]
+
+    logger.debug(f"Reranking {len(input_pairs)} pairs locally using {model_name}...")
+    # Predict scores
+    scores = model.predict(input_pairs, show_progress_bar=False) # Turn off internal progress bar
+    logger.debug(f"Finished local reranking with {model_name}.")
+
+    # Combine scores with original indices
+    indexed_scores = list(enumerate(scores)) # [(0, score0), (1, score1), ...]
+
+    # Sort by score in descending order
+    sorted_indices_scores = sorted(indexed_scores, key=lambda item: item[1], reverse=True)
+
+    # Extract just the original indices in the new sorted order
+    reranked_indices = [index for index, score in sorted_indices_scores]
+
+    # Apply top_k if specified
+    if top_k is not None:
+        reranked_indices = reranked_indices[:top_k]
+
+    return reranked_indices
+
+
 # Gets the list of indices that reranks the original texts
 async def ai_rerank(
     model: AIRerankModel,
@@ -647,51 +700,80 @@ async def ai_rerank(
     # Backoff function (Receives index of attempt)
     backoff_algo: Callable[[int], float] = lambda i: min(2**i, 5),
 ) -> list[int]:
+    if not texts:
+        return []
+
+    # Ensure top_k is sensible relative to the number of texts
+    if top_k is not None:
+        top_k = min(top_k, len(texts))
+        if top_k <= 0:  # If top_k becomes 0 or negative, return empty list
+            return []
+
     cache_key = get_rerank_cache_key(model, query, texts, top_k)
     cached_reranking = cache.get(cache_key)
     if cached_reranking is not None:
         return cached_reranking
 
     indices: list[int] | None = None
-    match model.company:
-        case "cohere":
-            for i in range(num_ratelimit_retries):
-                try:
-                    async with get_ai_connection().cohere_ratelimit_semaphore:
-                        rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                        await asyncio.sleep(60.0 / rpm if rpm != float('inf') else 0)
-                    response = await get_ai_connection().cohere_client.rerank(
-                        model=model.model, query=query, documents=texts, top_n=top_k,
-                    )
-                    indices = [result.index for result in response.results]
-                    break
-                except (cohere.errors.TooManyRequestsError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
-                    logger.warning(f"Cohere Rerank Error: {e}")
-                    if i == num_ratelimit_retries - 1:
-                        raise AITimeoutError("Cannot overcome Cohere Rerank Error")
-                    async with get_ai_connection().cohere_ratelimit_semaphore:
-                        await asyncio.sleep(backoff_algo(i))
-            if indices is None:
-                raise AITimeoutError("Cannot overcome Cohere Rerank Error")
+    if model.company == "huggingface":
+        # Run local reranking in a separate thread to avoid blocking asyncio loop
+        try:
+            indices = await asyncio.to_thread(
+                _rerank_local_huggingface,
+                model.model,
+                query,
+                texts,
+                top_k
+            )
+        except Exception as e:
+            logger.error(f"HuggingFace Rerank Error ({model.model}): {e}")
+            # Handle specific errors if needed, otherwise re-raise or return empty
+            # For simplicity, let's return empty list on error, but could raise AIError
+            indices = []  # Or raise AIError(f"HuggingFace reranking failed: {e}")
 
-        case "voyageai":
-            for i in range(num_ratelimit_retries):
-                try:
-                    async with get_ai_connection().voyageai_ratelimit_semaphore:
-                        rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                        await asyncio.sleep(60.0 / rpm if rpm != float('inf') else 0)
-                    voyageai_response = await get_ai_connection().voyageai_client.rerank(
-                         query=query, documents=texts, model=model.model, top_k=top_k,
-                    )
-                    indices = [int(result.index) for result in voyageai_response.results]
-                    break
-                except voyageai.error.RateLimitError as e:
-                    logger.warning(f"VoyageAI Rerank Error: {e}")
-                    if i == num_ratelimit_retries - 1: raise AITimeoutError("Cannot overcome VoyageAI Rerank Error")
-                    async with get_ai_connection().voyageai_ratelimit_semaphore:
-                        await asyncio.sleep(backoff_algo(i))
-            if indices is None:
-                raise AITimeoutError("Cannot overcome VoyageAI Rerank Error")
+    elif model.company == "cohere":
+        for i in range(num_ratelimit_retries):
+            try:
+                async with get_ai_connection().cohere_ratelimit_semaphore:
+                    rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
+                    await asyncio.sleep(60.0 / rpm if rpm != float('inf') else 0)
+                response = await get_ai_connection().cohere_client.rerank(
+                    model=model.model, query=query, documents=texts, top_n=top_k,
+                )
+                indices = [result.index for result in response.results]
+                break
+            except (cohere.errors.TooManyRequestsError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                logger.warning(f"Cohere Rerank Error: {e}")
+                if i == num_ratelimit_retries - 1:
+                    raise AITimeoutError("Cannot overcome Cohere Rerank Error")
+                async with get_ai_connection().cohere_ratelimit_semaphore:
+                    await asyncio.sleep(backoff_algo(i))
+        if indices is None:
+            raise AITimeoutError("Cannot overcome Cohere Rerank Error")
+
+    elif model.company == "voyageai":
+        for i in range(num_ratelimit_retries):
+            try:
+                async with get_ai_connection().voyageai_ratelimit_semaphore:
+                    rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
+                    await asyncio.sleep(60.0 / rpm if rpm != float('inf') else 0)
+                voyageai_response = await get_ai_connection().voyageai_client.rerank(
+                     query=query, documents=texts, model=model.model, top_k=top_k,
+                )
+                indices = [int(result.index) for result in voyageai_response.results]
+                break
+            except voyageai.error.RateLimitError as e:
+                logger.warning(f"VoyageAI Rerank Error: {e}")
+                if i == num_ratelimit_retries - 1: raise AITimeoutError("Cannot overcome VoyageAI Rerank Error")
+                async with get_ai_connection().voyageai_ratelimit_semaphore:
+                    await asyncio.sleep(backoff_algo(i))
+        if indices is None:
+            raise AITimeoutError("Cannot overcome VoyageAI Rerank Error")
+
+    if indices is None:
+        # Should ideally not happen if all branches handle errors/success
+        logger.error(f"Reranking failed unexpectedly for model {model.company}/{model.model}")
+        indices = []  # Return empty list as a fallback
 
     cache.set(cache_key, indices)
     return indices
