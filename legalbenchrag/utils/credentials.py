@@ -1,4 +1,8 @@
-import tomllib
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:
+    import tomli as tomllib  # For Python < 3.11
+
 from pydantic import BaseModel, SecretStr
 
 
