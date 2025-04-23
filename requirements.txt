@@ -230,3 +230,11 @@ yarl==1.9.4
 dropbox~=12.0.2
 setuptools~=75.8.0
 matplotlib~=3.10.1
+sentence_transformers~=4.0.2
+llama_index~=0.12.28
+llama-index-retrievers-bm25
+llama-index-embeddings-huggingface
+llama-index-embeddings-cohere
+llama-index-embeddings-openai
+llama-index-embeddings-voyageai
+
