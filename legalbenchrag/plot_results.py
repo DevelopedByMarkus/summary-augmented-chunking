@@ -46,6 +46,10 @@ def create_label(row):
         embed_label = 'oai3-l'
     elif 'text-embedding-ada-002' in embed_raw:
         embed_label = 'oai-ada'
+    elif 'legal-bert-base' in embed_raw:
+        embed_label = 'lbert-b'
+    elif 'legal-bert-small' in embed_raw:
+        embed_label = 'lbert-s'
     else:
         # Fallback: try to take last part of path/name
         embed_label = embed_raw.split('/')[-1][:10] # Limit length

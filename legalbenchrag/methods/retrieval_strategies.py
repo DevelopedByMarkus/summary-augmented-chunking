@@ -9,17 +9,21 @@ from legalbenchrag.methods.hypa import HypaStrategy
 # Define common chunking strategies for baseline
 chunk_strategies: List[BaselineChunkingStrategy] = [
     BaselineChunkingStrategy(strategy_name="rcts", chunk_size=500, chunk_overlap_ratio=0.0),
-    # BaselineChunkingStrategy(strategy_name="naive", chunk_size=500),
+    BaselineChunkingStrategy(strategy_name="naive", chunk_size=500),
 ]
 
 # Define common embedding models
 oai_embed_model = AIEmbeddingModel(company="openai", model="text-embedding-3-large")
 hf_embed_model_bge = AIEmbeddingModel(company="huggingface", model="BAAI/bge-base-en-v1.5")
 hf_embed_model_gte = AIEmbeddingModel(company="huggingface", model="thenlper/gte-large")
+hf_embed_model_legalbert_base = AIEmbeddingModel(company="huggingface", model="nlpaueb/legal-bert-base-uncased")
+hf_embed_model_legalbert_small = AIEmbeddingModel(company="huggingface", model="nlpaueb/legal-bert-small-uncased")
 
 baseline_embed_strategies = [
     # hf_embed_model_bge,
-    oai_embed_model,
+    # oai_embed_model,
+    hf_embed_model_legalbert_base,
+    hf_embed_model_legalbert_small,
 ]
 
 # Define rerank models
@@ -29,7 +33,7 @@ rerank_models: list[AIRerankModel | None] = [
 ]
 
 # Define top_k values
-top_ks: list[int] = [1]  # , 2, 4, 8, 16, 32, 64]
+top_ks: list[int] = [1, 2, 4, 8, 16, 32, 64]
 
 BASELINE_STRATEGIES: list[BaselineStrategy] = []
 for chunk_strategy in chunk_strategies:
@@ -56,8 +60,10 @@ HYPA_STRATEGIES: list[HypaStrategy] = []
 hypa_top_ks = [1, 2, 4, 8, 16, 32, 64]  # Final fusion top_k
 
 hypa_embed_strategies = [
-    hf_embed_model_bge,
+    # hf_embed_model_bge,
     # oai_embed_model,
+    hf_embed_model_legalbert_base,
+    hf_embed_model_legalbert_small,
 ]
 
 for chunk_strategy in chunk_strategies:
@@ -80,7 +86,7 @@ for chunk_strategy in chunk_strategies:
 # Use Union for type hinting the list
 ALL_RETRIEVAL_STRATEGIES: List[Union[BaselineStrategy, HypaStrategy]] = []
 ALL_RETRIEVAL_STRATEGIES.extend(BASELINE_STRATEGIES)
-# ALL_RETRIEVAL_STRATEGIES.extend(HYPA_STRATEGIES)
+ALL_RETRIEVAL_STRATEGIES.extend(HYPA_STRATEGIES)
 
 print(f"Defined {len(BASELINE_STRATEGIES)} Baseline strategies.")
 print(f"Defined {len(HYPA_STRATEGIES)} HyPA strategies.")
