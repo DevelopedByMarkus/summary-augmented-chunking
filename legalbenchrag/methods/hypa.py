@@ -26,7 +26,9 @@ from legalbenchrag.benchmark_types import (
 from legalbenchrag.utils.ai import (
     AIEmbeddingModel,
     AIEmbeddingType,
+    AIRerankModel,
     ai_embedding,
+    ai_rerank,
 )
 # Import new chunking utility
 from legalbenchrag.utils.chunking import Chunk, get_chunks
@@ -43,7 +45,9 @@ class HypaStrategy(BaseModel):
     embedding_model: AIEmbeddingModel  # We'll pass this to LlamaIndex
     embedding_top_k: int  # Used for initial vector retrieval before fusion
     bm25_top_k: int  # Used for initial bm25 retrieval before fusion
-    fusion_top_k: int  # Final number of results after fusion
+    fusion_top_k: int  # Number of results after fusion / before reranking
+    rerank_model: AIRerankModel | None = None
+    rerank_top_k: int | None = None # Final number of results after reranking
 
 
 # --- Helper Function for Fusion ---
@@ -61,7 +65,11 @@ def fuse_results(results_dict: Dict[str, List[NodeWithScore]], similarity_top_k:
     unique_nodes_by_id: Dict[str, NodeWithScore] = {}
     for node_with_score in all_nodes_with_scores:
         node_id = node_with_score.node.node_id
-        if node_id not in unique_nodes_by_id or node_with_score.score > unique_nodes_by_id[node_id].score:
+        # Ensure score is not None before comparison
+        current_score = node_with_score.score if node_with_score.score is not None else -float('inf')
+        existing_score = unique_nodes_by_id[node_id].score if node_id in unique_nodes_by_id and unique_nodes_by_id[node_id].score is not None else -float('inf')
+
+        if node_id not in unique_nodes_by_id or current_score > existing_score:
              unique_nodes_by_id[node_id] = node_with_score
 
     sorted_nodes = sorted(unique_nodes_by_id.values(), key=lambda x: x.score or 0.0, reverse=True)
@@ -78,7 +86,7 @@ def fuse_results(results_dict: Dict[str, List[NodeWithScore]], similarity_top_k:
     reranked_nodes: List[NodeWithScore] = []
     for node_id in reranked_ids:
         node_with_score = text_to_node[node_id]
-        node_with_score.score = fused_scores[node_id]  # Update score
+        node_with_score.score = fused_scores[node_id]  # Update score to RRF score
         reranked_nodes.append(node_with_score)
 
     return reranked_nodes[:similarity_top_k]
@@ -236,7 +244,7 @@ class HypaRetrievalMethod(RetrievalMethod):
         print("HyPA: BM25 retriever built.")
 
     async def query(self, query: str) -> QueryResponse:
-        """Perform HyPA retrieval: vector + bm25 + fusion."""
+        """Perform HyPA retrieval: vector + bm25 + fusion + optional reranking."""
         if self.vector_index is None or self.bm25_retriever is None or self.nodes is None:
             # Handle case where sync didn't create nodes
             if self.nodes is not None and not self.nodes:  # Check if nodes is an empty list
@@ -249,7 +257,7 @@ class HypaRetrievalMethod(RetrievalMethod):
         vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.strategy.embedding_top_k)
         # BM25 retriever was already configured with nodes and top_k
         bm25_retriever = self.bm25_retriever
-        # Re-set bm25 top_k per query if needed (usually configured at init is fine)
+        # Ensure bm25 top_k is set correctly per query based on strategy (already done at init usually)
         # bm25_retriever.similarity_top_k = self.strategy.bm25_top_k
 
         retrievers: List[BaseRetriever] = [vector_retriever, bm25_retriever]
@@ -266,15 +274,41 @@ class HypaRetrievalMethod(RetrievalMethod):
         # 3. Fuse results
         fused_nodes = fuse_results(results_dict, similarity_top_k=self.strategy.fusion_top_k)
 
-        # 4. Map LlamaIndex Nodes to LegalBenchRAG Snippets
+        # 4. Optional Reranking Step
+        final_nodes = fused_nodes
+        if self.strategy.rerank_model and self.strategy.rerank_top_k is not None and fused_nodes:
+            print(f"HyPA: Reranking {len(fused_nodes)} fused nodes with {self.strategy.rerank_model.company}/{self.strategy.rerank_model.model} (top_k={self.strategy.rerank_top_k})...")
+            # Extract text content from fused nodes for the reranker
+            texts_to_rerank = [node.get_content() for node in fused_nodes]
+
+            # Call the centralized ai_rerank function
+            reranked_indices = await ai_rerank(
+                model=self.strategy.rerank_model,
+                query=query,
+                texts=texts_to_rerank,
+                top_k=self.strategy.rerank_top_k
+            )
+
+            # Reorder the fused_nodes list based on the reranked indices
+            # Keep the original NodeWithScore objects but in the new order
+            final_nodes = [fused_nodes[i] for i in reranked_indices]
+            # print(f"HyPA: Reranking complete, {len(final_nodes)} nodes remaining.")
+            # Update scores? Optional: Could update node scores based on reranker score,
+            # but reranker scores are not directly comparable. Keeping RRF score might be okay.
+            # Or set a simple rank-based score:
+            # for rank, node_with_score in enumerate(final_nodes):
+            #     node_with_score.score = 1.0 / (rank + 1)
+
+        # 5. Map Final LlamaIndex Nodes to LegalBenchRAG Snippets
         retrieved_snippets: List[RetrievedSnippet] = []
-        for node_with_score in fused_nodes:
+        for node_with_score in final_nodes:
             node = node_with_score.node
             # Node should be a TextNode with the info we added
             if isinstance(node, TextNode):
                 file_path = node.metadata.get("file_path")
                 start_idx = node.start_char_idx
                 end_idx = node.end_char_idx
+                # Use the score from the NodeWithScore object (either RRF or potentially updated by reranker step)
                 score = node_with_score.score if node_with_score.score is not None else 0.0
 
                 if file_path and start_idx is not None and end_idx is not None:

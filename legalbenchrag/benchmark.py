@@ -23,7 +23,7 @@ benchmark_name_to_weight: dict[str, float] = {
 }
 
 # --- Sampling Settings ---
-MAX_TESTS_PER_BENCHMARK = 194
+MAX_TESTS_PER_BENCHMARK = 10
 SORT_BY_DOCUMENT = True  # Keep True for faster ingestion during testing
 
 # Define characters typically illegal in Windows filenames and replacement
@@ -208,13 +208,16 @@ async def main() -> None:
             retrieval_method = HypaRetrievalMethod(strategy=retrieval_strategy)
             row.update({
                 "method": "hypa",
-                "chunk_strategy_name": retrieval_strategy.chunk_strategy_name, # Add chunk info
+                "chunk_strategy_name": retrieval_strategy.chunk_strategy_name,
                 "chunk_size": retrieval_strategy.chunk_size,
-                "embedding_model_company": retrieval_strategy.embedding_model.company, # Split company/model
+                "embedding_model_company": retrieval_strategy.embedding_model.company,
                 "embedding_model_name": retrieval_strategy.embedding_model.model,
                 "embedding_top_k": retrieval_strategy.embedding_top_k,
                 "bm25_top_k": retrieval_strategy.bm25_top_k,
                 "fusion_top_k": retrieval_strategy.fusion_top_k,
+                "rerank_model_company": retrieval_strategy.rerank_model.company if retrieval_strategy.rerank_model else None,
+                "rerank_model_name": retrieval_strategy.rerank_model.model if retrieval_strategy.rerank_model else None,
+                "rerank_top_k": retrieval_strategy.rerank_top_k if retrieval_strategy.rerank_model else None,
             })
         else:
             print(f"WARNING: Unknown strategy type at index {i}. Skipping.")
@@ -234,8 +237,11 @@ async def main() -> None:
                 weights=weights,
             )
 
-            # Save individual results
-            result_filename = f"{benchmark_path}/{i}_{row.get('method', 'unknown')}_{row.get('embedding_model_name', 'unknown').replace('/','_')}.json"
+            # Save individual results - update filename format slightly
+            strat_name = row.get('method', 'unknown')
+            embed_name = row.get('embedding_model_name', 'unknown').replace('/','_')
+            rerank_name = f"_rrk_{row.get('rerank_model_name', 'None').replace('/','_')}" if row.get('rerank_model_name') else ""
+            result_filename = f"{benchmark_path}/{i}_{strat_name}_{embed_name}{rerank_name}.json"
             with open(result_filename, "w", encoding='utf-8') as f:
                 f.write(benchmark_result.model_dump_json(indent=2))  # Use indent=2 for smaller files
 
@@ -256,17 +262,20 @@ async def main() -> None:
                             math.isnan(avg_precision) or math.isnan(avg_recall)):
                         if avg_precision + avg_recall == 0:
                             avg_f1_score = 0.0
-                            row[f"{benchmark_name}|f1_score"] = avg_f1_score
                         else:
                             avg_f1_score = 2 * (avg_precision * avg_recall) / (avg_precision + avg_recall)
-                            row[f"{benchmark_name}|f1_score"] = avg_f1_score
+                        row[f"{benchmark_name}|f1_score"] = avg_f1_score
                     else:  # Handle NaN case where P or R is NaN
-                        avg_f1_score = 0.0  # must assign float to avoid error in print
-                        row[f"{benchmark_name}|f1_score"] = float('nan')
-                    # Per benchmark results:
+                        avg_f1_score = float('nan') # Assign NaN if P or R is NaN
+                        row[f"{benchmark_name}|f1_score"] = avg_f1_score
+                    # Per benchmark results
                     print(f"  {benchmark_name} Avg Recall: {100 * avg_recall:.2f}%")
                     print(f"  {benchmark_name} Avg Precision: {100 * avg_precision:.2f}%")
-                    print(f"  {benchmark_name} Avg F1 Score: {100 * avg_f1_score:.2f}%")
+                    # Recalculate for printing, handling potential NaN/ZeroDivisionError safely
+                    if isinstance(avg_f1_score, float) and not math.isnan(avg_f1_score):
+                        print(f"  {benchmark_name} Avg F1 Score: {100 * avg_f1_score:.2f}%")
+                    else:
+                        print(f"  {benchmark_name} Avg F1 Score: N/A")
 
                 else:  # If no tests for this benchmark ran
                     row[f"{benchmark_name}|recall"] = float('nan')
@@ -297,17 +306,20 @@ async def main() -> None:
     if rows:
         # Define expected columns based on union of possible keys
         all_keys = set(key for row in rows for key in row.keys())
-        # Adjust sorting key slightly to place F1 score alongside P and R
+        # Adjust sorting key slightly to place F1 score alongside P and R, group K values
         ordered_columns = sorted(list(all_keys), key=lambda x: (
             0 if x == 'i' else
             1 if x == 'method' else
-            2 if x == 'chunk' in x else
-            3 if x == 'embedding' in x else
-            4 if x == 'rerank' in x or x == 'bm25' in x or x == 'fusion' in x else
+            2 if 'chunk' in x else
+            3 if 'embedding' in x else
+            4 if 'bm25' in x else  # Group HyPA params
+            5 if 'fusion' in x else
+            6 if 'rerank' in x else  # Group rerank params for both
+            7 if 'token_limit' in x else  # Baseline specific param
             # Group main overall scores together
-            5 if x in ('recall', 'precision', 'f1_score') else
+            8 if x in ('recall', 'precision', 'f1_score') else
             # Per-benchmark metrics last
-            6
+            9
         ))
         # Ensure main metrics are present
         if 'recall' not in ordered_columns: ordered_columns.append('recall')
