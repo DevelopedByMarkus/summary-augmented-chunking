@@ -39,9 +39,9 @@ rerank_models: list[AIRerankModel | None] = [
     None,
     # cohere_rerank_model,
     # voyage_rerank_model,
-    # hf_rerank_minilm,
-    # hf_rerank_bge_base,
-    hf_rerank_bge_large,
+    hf_rerank_minilm,
+    hf_rerank_bge_base,
+    # hf_rerank_bge_large,
 ]
 
 # Define final top_k values to test for both methods
