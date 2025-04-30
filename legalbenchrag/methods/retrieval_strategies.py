@@ -1,87 +1,107 @@
-from typing import Literal, List, Union
+from typing import List, Union
 
-from legalbenchrag.methods.baseline import ChunkingStrategy as BaselineChunkingStrategy, RetrievalStrategy as BaselineStrategy  # BaselineStrategy are the 4 original legalbench-rag strategies
+from legalbenchrag.methods.baseline import ChunkingStrategy, RetrievalStrategy as BaselineStrategy  # BaselineStrategy are the 4 original legalbench-rag strategies
 from legalbenchrag.utils.ai import AIEmbeddingModel, AIRerankModel
 from legalbenchrag.methods.hypa import HypaStrategy
 
-# --- Baseline Strategy Definitions ---
-
-# Define common chunking strategies for baseline
-chunk_strategies: List[BaselineChunkingStrategy] = [
-    BaselineChunkingStrategy(strategy_name="rcts", chunk_size=500, chunk_overlap_ratio=0.0),
-    BaselineChunkingStrategy(strategy_name="naive", chunk_size=500),
+# Chunking Strategies (used by both Baseline and HyPA)
+chunk_strategies: List[ChunkingStrategy] = [
+    ChunkingStrategy(strategy_name="rcts", chunk_size=500, chunk_overlap_ratio=0.0),
+    # ChunkingStrategy(strategy_name="naive", chunk_size=500),
 ]
 
-# Define common embedding models
+# Embedding Models (used by both)
 oai_embed_model = AIEmbeddingModel(company="openai", model="text-embedding-3-large")
-hf_embed_model_bge = AIEmbeddingModel(company="huggingface", model="BAAI/bge-base-en-v1.5")
+hf_embed_model_bge_base = AIEmbeddingModel(company="huggingface", model="BAAI/bge-base-en-v1.5")
+hf_embed_model_bge_large = AIEmbeddingModel(company="huggingface", model="BAAI/bge-large-en-v1.5")
 hf_embed_model_gte = AIEmbeddingModel(company="huggingface", model="thenlper/gte-large")
 hf_embed_model_legalbert_base = AIEmbeddingModel(company="huggingface", model="nlpaueb/legal-bert-base-uncased")
 hf_embed_model_legalbert_small = AIEmbeddingModel(company="huggingface", model="nlpaueb/legal-bert-small-uncased")
 
-baseline_embed_strategies = [
-    hf_embed_model_bge,
-    hf_embed_model_gte,
+embed_strategies = [
     oai_embed_model,
+    # hf_embed_model_bge_base,
+    # hf_embed_model_bge_large,
+    hf_embed_model_gte,
     # hf_embed_model_legalbert_base,
     # hf_embed_model_legalbert_small,
 ]
 
-# Define rerank models
+# Rerank Models (used by both)
+cohere_rerank_model = AIRerankModel(company="cohere", model="rerank-english-v3.0")
+voyage_rerank_model = AIRerankModel(company="voyageai", model="rerank-lite-1")
+hf_rerank_minilm = AIRerankModel(company="huggingface", model="cross-encoder/ms-marco-MiniLM-L-6-v2")
+hf_rerank_bge_base = AIRerankModel(company="huggingface", model="BAAI/bge-reranker-base")
+hf_rerank_bge_large = AIRerankModel(company="huggingface", model="BAAI/bge-reranker-large")
+
+
 rerank_models: list[AIRerankModel | None] = [
     None,
-    # AIRerankModel(company="cohere", model="rerank-english-v3.0"),
+    # cohere_rerank_model,
+    # voyage_rerank_model,
+    hf_rerank_minilm,
+    hf_rerank_bge_base,
+    hf_rerank_bge_large,
 ]
 
-# Define top_k values
-top_ks: list[int] = [1, 2, 4, 8, 16, 32, 64]
+# Define final top_k values to test for both methods
+final_top_k_values: list[int] = [1, 2, 4, 8, 16, 32, 64]
+# Calculate max K needed for consistent input to reranker caching
+max_final_k = max(final_top_k_values) if final_top_k_values else 64  # Default if list is empty
+
+# --- Baseline Strategy Definitions ---
 
 BASELINE_STRATEGIES: list[BaselineStrategy] = []
 for chunk_strategy in chunk_strategies:
-    for embed_model in baseline_embed_strategies:
+    for embed_model in embed_strategies:
         for rerank_model in rerank_models:
-            for top_k in top_ks:
-                # Adjust embedding_topk if reranking is used
+            for final_k in final_top_k_values:
+                # rerank_topk is final_k if reranker is active
                 BASELINE_STRATEGIES.append(
                     BaselineStrategy(
                         chunking_strategy=chunk_strategy,
                         embedding_model=embed_model,
-                        embedding_topk=300 if rerank_model is not None else top_k,  # Fetch more initially for reranking
+                        embedding_topk=300 if rerank_model is not None else final_k,
                         rerank_model=rerank_model,
-                        # Use the final top_k for rerank_topk if reranker is active
-                        rerank_topk=top_k if rerank_model is not None else 0,  # Rerank topk only relevant if reranker exists
+                        rerank_topk=final_k if rerank_model is not None else 0,
                         token_limit=None,
                     ),
                 )
 
-# --- Define HyPA Strategy Instances ---
+# --- HyPA Strategy Definitions ---
+
 HYPA_STRATEGIES: list[HypaStrategy] = []
-
-# Example HyPA strategies using different chunking and embeddings
-hypa_top_ks = [1, 2, 4, 8, 16, 32, 64]  # Final fusion top_k
-
-hypa_embed_strategies = [
-    hf_embed_model_bge,
-    hf_embed_model_gte,
-    oai_embed_model,
-    # hf_embed_model_legalbert_base,
-    # hf_embed_model_legalbert_small,
-]
-
 for chunk_strategy in chunk_strategies:
-    for embed_model in hypa_embed_strategies:
-        for fusion_k in hypa_top_ks:
-            HYPA_STRATEGIES.append(
-                HypaStrategy(
-                    chunk_strategy_name=chunk_strategy.strategy_name,
-                    chunk_size=chunk_strategy.chunk_size,
-                    chunk_overlap_ratio=chunk_strategy.chunk_overlap_ratio,
-                    embedding_model=embed_model,
-                    embedding_top_k=max(10, fusion_k * 2),  # Fetch more for vector search (e.g., 10 or 2x final k)
-                    bm25_top_k=max(10, fusion_k * 2),  # Fetch more for BM25 (e.g., 10 or 2x final k)
-                    fusion_top_k=fusion_k
+    for embed_model in embed_strategies:
+        for rerank_model in rerank_models:
+            for final_k in final_top_k_values:
+                # Determine intermediate K values based on whether reranker is active
+                if rerank_model is None:
+                    # No reranker: fusion_top_k is the final k
+                    current_rerank_top_k = None
+                    current_fusion_top_k = final_k
+                    current_embedding_top_k = max(10, current_fusion_top_k * 2)
+                    current_bm25_top_k = max(10, current_fusion_top_k * 2)
+                else:
+                    # Reranker active: final k is rerank_top_k
+                    current_rerank_top_k = final_k
+                    current_fusion_top_k = max(10, max_final_k * 2)
+                    current_embedding_top_k = max(20, current_fusion_top_k * 3)
+                    current_bm25_top_k = max(20, current_fusion_top_k * 3)
+
+                HYPA_STRATEGIES.append(
+                    HypaStrategy(
+                        chunk_strategy_name=chunk_strategy.strategy_name,
+                        chunk_size=chunk_strategy.chunk_size,
+                        chunk_overlap_ratio=chunk_strategy.chunk_overlap_ratio,
+                        embedding_model=embed_model,
+                        embedding_top_k=current_embedding_top_k,
+                        bm25_top_k=current_bm25_top_k,
+                        fusion_top_k=current_fusion_top_k,
+                        rerank_model=rerank_model,
+                        rerank_top_k=current_rerank_top_k
+                    )
                 )
-            )
 
 
 # --- Combine all strategies to be tested ---

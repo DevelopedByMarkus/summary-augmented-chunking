@@ -3,6 +3,9 @@
 .swp
 __pycache__
 *.log
+.png
+.jpg
+.pdf
 
 credentials/*
 !credentials/credentials.example.toml
