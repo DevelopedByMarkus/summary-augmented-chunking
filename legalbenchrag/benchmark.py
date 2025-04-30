@@ -5,6 +5,7 @@ import random
 import pandas as pd
 import re
 import math
+import logging
 
 from legalbenchrag.benchmark_types import Benchmark, Document, QAGroundTruth, RetrievalMethod
 # Import Baseline components
@@ -14,6 +15,9 @@ from legalbenchrag.methods.hypa import HypaRetrievalMethod, HypaStrategy
 from legalbenchrag.methods.retrieval_strategies import ALL_RETRIEVAL_STRATEGIES
 from legalbenchrag.run_benchmark import run_benchmark
 from legalbenchrag.utils.credentials import credentials
+
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.getLogger("bm25s").setLevel(logging.WARNING)
 
 benchmark_name_to_weight: dict[str, float] = {
     "privacy_qa": 0.25,

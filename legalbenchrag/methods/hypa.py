@@ -1,5 +1,6 @@
 import asyncio
 from typing import List, Dict, Literal
+import logging
 
 # LlamaIndex imports
 from llama_index.core import VectorStoreIndex, Document as LlamaDocument, Settings
@@ -32,6 +33,8 @@ from legalbenchrag.utils.ai import (
 )
 # Import new chunking utility
 from legalbenchrag.utils.chunking import Chunk, get_chunks
+
+logger = logging.getLogger(__name__)
 
 
 # --- Configuration Model ---
@@ -277,7 +280,7 @@ class HypaRetrievalMethod(RetrievalMethod):
         # 4. Optional Reranking Step
         final_nodes = fused_nodes
         if self.strategy.rerank_model and self.strategy.rerank_top_k is not None and fused_nodes:
-            print(f"HyPA: Reranking {len(fused_nodes)} fused nodes with {self.strategy.rerank_model.company}/{self.strategy.rerank_model.model} (top_k={self.strategy.rerank_top_k})...")
+            logger.debug(f"HyPA: Reranking {len(fused_nodes)} fused nodes with {self.strategy.rerank_model.company}/{self.strategy.rerank_model.model} (top_k={self.strategy.rerank_top_k})...")
             # Extract text content from fused nodes for the reranker
             texts_to_rerank = [node.get_content() for node in fused_nodes]
 
