@@ -22,7 +22,7 @@ embed_strategies = [
     oai_embed_model,
     # hf_embed_model_bge_base,
     # hf_embed_model_bge_large,
-    hf_embed_model_gte,
+    # hf_embed_model_gte,
     # hf_embed_model_legalbert_base,
     # hf_embed_model_legalbert_small,
 ]
@@ -39,8 +39,8 @@ rerank_models: list[AIRerankModel | None] = [
     None,
     # cohere_rerank_model,
     # voyage_rerank_model,
-    hf_rerank_minilm,
-    hf_rerank_bge_base,
+    # hf_rerank_minilm,
+    # hf_rerank_bge_base,
     hf_rerank_bge_large,
 ]
 
