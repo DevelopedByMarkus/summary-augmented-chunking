@@ -3,7 +3,6 @@ import datetime as dt
 import os
 import random
 import pandas as pd
-import re
 import math
 import logging
 
@@ -15,6 +14,7 @@ from legalbenchrag.methods.hypa import HypaRetrievalMethod, HypaStrategy
 from legalbenchrag.methods.retrieval_strategies import ALL_RETRIEVAL_STRATEGIES
 from legalbenchrag.run_benchmark import run_benchmark
 from legalbenchrag.utils.credentials import credentials
+from legalbenchrag.utils.utils import sanitize_filename, generate_filename
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logging.getLogger("bm25s").setLevel(logging.WARNING)
@@ -27,17 +27,8 @@ benchmark_name_to_weight: dict[str, float] = {
 }
 
 # --- Sampling Settings ---
-MAX_TESTS_PER_BENCHMARK = 194
+MAX_TESTS_PER_BENCHMARK = 1
 SORT_BY_DOCUMENT = True  # Keep True for faster ingestion during testing
-
-# Define characters typically illegal in Windows filenames and replacement
-ILLEGAL_FILENAME_CHARS = r'[<>:"|?*]'
-REPLACEMENT_CHAR = '_'
-
-
-def sanitize_filename(filename: str) -> str:
-    """Replaces characters illegal in Windows filenames with underscores."""
-    return re.sub(ILLEGAL_FILENAME_CHARS, REPLACEMENT_CHAR, filename)
 
 
 async def main() -> None:
@@ -201,11 +192,10 @@ async def main() -> None:
                 "chunk_size": retrieval_strategy.chunking_strategy.chunk_size,
                 "embedding_model_company": retrieval_strategy.embedding_model.company,
                 "embedding_model_name": retrieval_strategy.embedding_model.model,
-                "embedding_topk": retrieval_strategy.embedding_topk,
+                "embedding_top_k": retrieval_strategy.embedding_top_k,
                 "rerank_model_company": retrieval_strategy.rerank_model.company if retrieval_strategy.rerank_model else None,
                 "rerank_model_name": retrieval_strategy.rerank_model.model if retrieval_strategy.rerank_model else None,
-                "rerank_topk": retrieval_strategy.rerank_topk if retrieval_strategy.rerank_model else None,
-                "token_limit": retrieval_strategy.token_limit,
+                "rerank_top_k": retrieval_strategy.rerank_top_k,
             })
         elif isinstance(retrieval_strategy, HypaStrategy):
             print(f"Method Type: HyPA")
@@ -221,7 +211,7 @@ async def main() -> None:
                 "fusion_top_k": retrieval_strategy.fusion_top_k,
                 "rerank_model_company": retrieval_strategy.rerank_model.company if retrieval_strategy.rerank_model else None,
                 "rerank_model_name": retrieval_strategy.rerank_model.model if retrieval_strategy.rerank_model else None,
-                "rerank_top_k": retrieval_strategy.rerank_top_k if retrieval_strategy.rerank_model else None,
+                "rerank_top_k": retrieval_strategy.rerank_top_k,
             })
         else:
             print(f"WARNING: Unknown strategy type at index {i}. Skipping.")
@@ -241,11 +231,10 @@ async def main() -> None:
                 weights=weights,
             )
 
-            # Save individual results - update filename format slightly
-            strat_name = row.get('method', 'unknown')
-            embed_name = row.get('embedding_model_name', 'unknown').replace('/','_')
-            rerank_name = f"_rrk_{row.get('rerank_model_name', 'None').replace('/','_')}" if row.get('rerank_model_name') else ""
-            result_filename = f"{benchmark_path}/{i}_{strat_name}_{embed_name}{rerank_name}.json"
+            # Generate the detailed base filename (without path or extension)
+            detailed_base_filename = generate_filename(i, retrieval_strategy, row)
+            # Construct the full path for the JSON file
+            result_filename = f"{benchmark_path}/{detailed_base_filename}.json"
             with open(result_filename, "w", encoding='utf-8') as f:
                 f.write(benchmark_result.model_dump_json(indent=2))  # Use indent=2 for smaller files
 

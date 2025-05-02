@@ -669,7 +669,11 @@ def _rerank_local_huggingface(
 
     logger.debug(f"Reranking {len(input_pairs)} pairs locally using {model_name}...")
     # Predict scores for ALL query-text-pairs
-    scores = model.predict(input_pairs, show_progress_bar=False)  # Turn off internal progress bar
+    scores = model.predict(
+        input_pairs,
+        show_progress_bar=False,  # Turn off internal progress bar
+        batch_size=8 if "large" in model_name else 32
+    )
     logger.debug(f"Finished local reranking with {model_name}.")
 
     # Combine scores with original indices

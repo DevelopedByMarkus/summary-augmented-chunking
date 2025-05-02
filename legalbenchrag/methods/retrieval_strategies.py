@@ -36,7 +36,7 @@ hf_rerank_bge_large = AIRerankModel(company="huggingface", model="BAAI/bge-reran
 
 
 rerank_models: list[AIRerankModel | None] = [
-    # None,
+    None,
     # cohere_rerank_model,
     # voyage_rerank_model,
     hf_rerank_minilm,
@@ -45,7 +45,7 @@ rerank_models: list[AIRerankModel | None] = [
 ]
 
 # Define final top_k values to test for both methods
-final_top_k_values: list[int] = [1, 2, 4, 8, 16, 32, 64]
+final_top_k_values: list[int] = [1, 2]  # , 4, 8, 16, 32, 64]
 # Calculate max K needed for consistent input to reranker caching
 max_final_k = max(final_top_k_values) if final_top_k_values else 64  # Default if list is empty
 
@@ -56,14 +56,14 @@ for chunk_strategy in chunk_strategies:
     for embed_model in embed_strategies:
         for rerank_model in rerank_models:
             for final_k in final_top_k_values:
-                # rerank_topk is final_k if reranker is active
+                # rerank_top_k is final_k if reranker is active
                 BASELINE_STRATEGIES.append(
                     BaselineStrategy(
                         chunking_strategy=chunk_strategy,
                         embedding_model=embed_model,
-                        embedding_topk=300 if rerank_model is not None else final_k,
+                        embedding_top_k=300 if rerank_model is not None else final_k,
                         rerank_model=rerank_model,
-                        rerank_topk=final_k if rerank_model is not None else 0,
+                        rerank_top_k=final_k,
                         token_limit=None,
                     ),
                 )
@@ -78,7 +78,7 @@ for chunk_strategy in chunk_strategies:
                 # Determine intermediate K values based on whether reranker is active
                 if rerank_model is None:
                     # No reranker: fusion_top_k is the final k
-                    current_rerank_top_k = None
+                    current_rerank_top_k = final_k
                     current_fusion_top_k = final_k
                     current_embedding_top_k = max(10, current_fusion_top_k * 2)
                     current_bm25_top_k = max(10, current_fusion_top_k * 2)

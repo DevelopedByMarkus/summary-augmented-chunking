@@ -42,9 +42,9 @@ class ChunkingStrategy(BaseModel):
 class RetrievalStrategy(BaseModel):
     chunking_strategy: ChunkingStrategy
     embedding_model: AIEmbeddingModel
-    embedding_topk: int
+    embedding_top_k: int
     rerank_model: AIRerankModel | None
-    rerank_topk: int
+    rerank_top_k: int
     token_limit: int | None
 
 
@@ -182,7 +182,7 @@ class BaselineRetrievalMethod(RetrievalMethod):
         if self.sqlite_db is None or self.embedding_infos is None:
             raise ValueError("Sync documents before querying!")
 
-        # 1. Get TopK Embedding results
+        # 1. Get Top_K Embedding results
         query_embedding = (
             await ai_embedding(
                 self.retrieval_strategy.embedding_model, [query], AIEmbeddingType.QUERY
@@ -199,7 +199,7 @@ class BaselineRetrievalMethod(RetrievalMethod):
             ORDER BY distance ASC
             LIMIT ?
             """,
-            [serialize_f32(query_embedding), self.retrieval_strategy.embedding_topk],
+            [serialize_f32(query_embedding), self.retrieval_strategy.embedding_top_k],
         ).fetchall()
 
         # Get metadata using the rowid (adjusting for 0-based list index -> sqlite rowid starts at 1)
@@ -214,14 +214,14 @@ class BaselineRetrievalMethod(RetrievalMethod):
                 self.retrieval_strategy.rerank_model,
                 query,
                 texts=initial_texts,
-                top_k=self.retrieval_strategy.rerank_topk,
+                top_k=self.retrieval_strategy.rerank_top_k,
             )
             # The reranked indices refer to the order in `initial_texts`
             final_metadatas = [
                 retrieved_metadatas[i] for i in reranked_indices_map
             ]
-            # No need to slice again by rerank_topk, ai_rerank already handles it
-            # MR: was: reranked_indices[: self.retrieval_strategy.rerank_topk]
+            # No need to slice again by rerank_top_k, ai_rerank already handles it
+            # MR: was: reranked_indices[: self.retrieval_strategy.rerank_top_k]
 
         # 3. Get the top retrieval snippets, up until the token limit
         remaining_tokens = self.retrieval_strategy.token_limit
@@ -231,7 +231,7 @@ class BaselineRetrievalMethod(RetrievalMethod):
                 break
             # Use the span directly from the metadata
             span = metadata.span
-            text_content = self.get_embedding_info_text(metadata) # Get text for length check
+            text_content = self.get_embedding_info_text(metadata)  # Get text for length check
             current_len = len(text_content)
 
             final_span = span
