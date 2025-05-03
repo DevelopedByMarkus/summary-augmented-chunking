@@ -2,7 +2,6 @@ import argparse
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
-import math
 import numpy as np
 
 # --- Helper Functions ---
@@ -10,16 +9,47 @@ import numpy as np
 
 def get_k_value(row):
     """Determines the 'k' value based on the strategy type."""
-    if row['method'] == 'baseline':
-        # If reranker is used, k is rerank_topk, otherwise it's embedding_topk
-        if pd.notna(row.get('rerank_model_name')):  # Check if reranker name exists
-            return row.get('rerank_topk')
-        else:
-            return row.get('embedding_topk')
-    elif row['method'] == 'hypa':
-        return row.get('fusion_top_k')
-    else:
-        return None  # Should not happen
+    # --- Determine Final Rerank K using fallback logic ---
+    final_k = None
+
+    # Check rerank_top_k
+    rrk_val = row.get('rerank_top_k')
+    if pd.notna(rrk_val) and isinstance(rrk_val, (int, float, np.integer, np.floating)) and rrk_val > 0:
+        final_k = rrk_val
+        return final_k
+
+    # Check rerank_topk (alternative name) if first not found
+    if final_k:
+        rrk_alt_val = row.get('rerank_topk')
+        if pd.notna(rrk_alt_val) and isinstance(rrk_alt_val, (int, float, np.integer, np.floating)) and rrk_alt_val > 0:
+            final_k = rrk_alt_val
+            return final_k
+
+    # Check fusion_top_k if still not found
+    if final_k:
+        fusion_k_val = row.get('fusion_top_k')
+        if pd.notna(fusion_k_val) and isinstance(fusion_k_val,
+                                                 (int, float, np.integer, np.floating)) and fusion_k_val > 0:
+            final_k = fusion_k_val
+            return final_k
+
+    # Check embedding_topk if still not found
+    if final_k:
+        embed_k_val = row.get('embedding_topk')
+        if pd.notna(embed_k_val) and isinstance(embed_k_val, (int, float, np.integer, np.floating)) and embed_k_val > 0:
+            final_k = embed_k_val
+            return final_k
+
+    # Check embedding_top_k if still not found
+    if final_k:
+        embed_k_val = row.get('embedding_top_k')
+        if pd.notna(embed_k_val) and isinstance(embed_k_val, (
+                int, float, np.integer, np.floating)) and embed_k_val > 0:
+            final_k = embed_k_val
+            return final_k
+
+    print(f"WARNING: No valid top_k value found for index {row.get('i')}")
+    return 64  # Default value if all checks fail
 
 
 def create_label(row):

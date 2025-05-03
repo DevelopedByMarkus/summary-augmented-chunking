@@ -5,6 +5,112 @@ from collections import defaultdict
 import sys
 
 
+def analyze_filepaths_for_plotting(json_file_path):
+    """
+    Analyzes retrieval file path accuracy and returns structured data for plotting.
+
+    Args:
+        json_file_path (str): The full path to the benchmark results JSON file.
+
+    Returns:
+        dict | None: A dictionary containing structured statistics suitable for plotting:
+            {
+              'datasets': {
+                  'dataset_name': {'correct': int, 'incorrect': int, 'total': int},
+                  ...
+              },
+              'overall': {'correct': int, 'incorrect': int, 'total': int}
+            }
+        Returns None if the file cannot be processed or contains no valid data.
+    """
+    try:
+        with open(json_file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:  # Catching generic exception for simplicity here
+        # Original function prints specific errors, this one returns None on any read error
+        # print(f"Error reading or parsing {json_file_path}: {e}", file=sys.stderr)
+        return None
+
+    dataset_stats_counts = defaultdict(lambda: {'correct': 0, 'incorrect': 0})
+
+    if 'qa_result_list' not in data:
+        # print(f"Error: 'qa_result_list' key not found in {json_file_path}", file=sys.stderr)
+        return None
+
+    valid_item_found = False
+    for item in data['qa_result_list']:
+        try:
+            qa_gt = item.get('qa_gt', {})
+            gt_snippets = qa_gt.get('snippets', [])
+            tags = qa_gt.get('tags', [])
+            retrieved_snippets = item.get('retrieved_snippets', [])
+
+            if not gt_snippets or not tags or not retrieved_snippets:
+                continue  # Skip items missing essential parts
+
+            dataset_tag = tags[0]
+            ground_truth_filepaths = set(snippet.get('file_path') for snippet in gt_snippets if snippet.get('file_path'))
+
+            if not ground_truth_filepaths:
+                continue  # Skip if ground truth file paths are missing
+
+            valid_item_found = True # Mark that we found at least one processable item
+
+            for snippet in retrieved_snippets:
+                retrieved_filepath = snippet.get('file_path')
+                # Count as incorrect if filepath is missing or doesn't match any ground truth path
+                if not retrieved_filepath or retrieved_filepath not in ground_truth_filepaths:
+                    dataset_stats_counts[dataset_tag]['incorrect'] += 1
+                else:
+                    dataset_stats_counts[dataset_tag]['correct'] += 1
+        except Exception:
+            # Ignore errors within a single item processing for robustness in plotting
+            # print(f"Warning: Error processing an item in {json_file_path}. Skipping item.", file=sys.stderr)
+            continue
+
+    if not valid_item_found:
+        # print(f"Warning: No processable QA items found in {json_file_path}", file=sys.stderr)
+        return None # Return None if no data could be extracted
+
+    # --- Post-processing for plotting structure ---
+    plot_data = {'datasets': {}, 'overall': {}}
+    overall_correct = 0
+    overall_incorrect = 0
+
+    # Ensure dataset_stats_counts is not empty before proceeding
+    if not dataset_stats_counts:
+        # print(f"Warning: No dataset statistics were generated for {json_file_path}", file=sys.stderr)
+        return None  # Return None if, despite valid items, no stats were generated (edge case)
+
+    for dataset, counts in dataset_stats_counts.items():
+        correct = counts.get('correct', 0)  # Use .get for safety
+        incorrect = counts.get('incorrect', 0)
+        total = correct + incorrect
+        # Only include datasets with actual results
+        if total > 0:
+            plot_data['datasets'][dataset] = {
+                'correct': correct,
+                'incorrect': incorrect,
+                'total': total
+            }
+            overall_correct += correct
+            overall_incorrect += incorrect
+
+    overall_total = overall_correct + overall_incorrect
+    plot_data['overall'] = {
+        'correct': overall_correct,
+        'incorrect': overall_incorrect,
+        'total': overall_total
+    }
+
+    # Return None if overall total is 0, meaning no snippets were actually analyzed
+    if overall_total == 0:
+        # print(f"Warning: Overall total snippets analyzed is 0 for {json_file_path}", file=sys.stderr)
+        return None
+
+    return plot_data
+
+
 def analyze_filepaths(json_file_path):
     """
     Analyzes the retrieval file path accuracy from a legalbench-RAG results JSON file.
