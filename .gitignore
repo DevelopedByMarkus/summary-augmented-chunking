@@ -6,6 +6,8 @@ __pycache__
 .png
 .jpg
 .pdf
+.json
+.csv
 
 credentials/*
 !credentials/credentials.example.toml
