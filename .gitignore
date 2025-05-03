@@ -14,6 +14,7 @@ tmp
 data/cache
 data/raw_data
 benchmark_results
+plots
 
 # TODO: Think about .egg-info at a later time
 LegalBenchRAG.egg-info
