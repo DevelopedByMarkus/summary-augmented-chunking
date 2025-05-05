@@ -14,7 +14,7 @@ ABBREVIATIONS = {
     },
     "reranker": {
         "rerank-english-v3.0": "coh",
-        "rerank-lite-1": "voy",
+        "rerank-2-lite": "voy",
         "cross-encoder/ms-marco-MiniLM-L-6-v2": "miniLM",
         "BAAI/bge-reranker-base": "bgeB",
         "BAAI/bge-reranker-large": "bgeL",
