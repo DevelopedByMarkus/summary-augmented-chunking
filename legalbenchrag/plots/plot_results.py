@@ -189,7 +189,7 @@ def plot_results(results_csv_path: Path):
     print(f"Found {len(unique_labels)} unique strategy configurations to plot.")
 
     # --- Plotting ---
-    plot_dir = Path("./plots")
+    plot_dir = Path("")
     plot_dir.mkdir(exist_ok=True)
     run_name = results_csv_path.parent.name  # Extract run name from parent dir
 
