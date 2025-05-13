@@ -13,8 +13,8 @@ ABBREVIATIONS = {
         "nlpaueb/legal-bert-small-uncased": "LbertS",
     },
     "reranker": {
-        "rerank-english-v3.0": "coh",
-        "rerank-2-lite": "voy",
+        "rerank-english-v3.0": "coh3",
+        "rerank-2-lite": "voy2l",
         "cross-encoder/ms-marco-MiniLM-L-6-v2": "miniLM",
         "BAAI/bge-reranker-base": "bgeB",
         "BAAI/bge-reranker-large": "bgeL",
