@@ -24,6 +24,8 @@ ABBREVIATIONS = {
     "chunking": {
         "rcts": "rcts",
         "naive": "naive",
+        "summary_rcts": "s-rcts",
+        "summary_naive": "s-naive",
     },
     "method": {
         "baseline": "base",
@@ -69,21 +71,17 @@ def generate_filename(index: int, retrieval_strategy, row: dict) -> str:
         chunk_size = None
         chunk_overlap = 0  # Default overlap placeholder
         chunk_overlap_str = str(chunk_overlap) if chunk_overlap > 0 else NONE_ABBR
-        chunk_use_summary = 0
 
         if isinstance(retrieval_strategy, BaselineStrategy):
             chunk_strategy_name = getattr(retrieval_strategy.chunking_strategy, 'strategy_name', None)
             chunk_size = getattr(retrieval_strategy.chunking_strategy, 'chunk_size', None)
-            chunk_use_summary = getattr(retrieval_strategy.chunking_strategy, 'use_summary', 0)
 
         elif isinstance(retrieval_strategy, HypaStrategy):
             chunk_strategy_name = getattr(retrieval_strategy, 'chunk_strategy_name', None)
             chunk_size = getattr(retrieval_strategy, 'chunk_size', None)
-            chunk_use_summary = getattr(retrieval_strategy, 'use_summary', 0)
 
         chunk_abbr = get_abbreviation(chunk_strategy_name, "chunking")
         chunk_size_str = str(chunk_size) if chunk_size is not None else NONE_ABBR
-        chunk_sum_str = str(chunk_use_summary) if chunk_use_summary > 0 else str(0)
 
         # --- Embedding ---
         embed_model_name = getattr(getattr(retrieval_strategy, 'embedding_model', None), 'model', None)
@@ -99,9 +97,9 @@ def generate_filename(index: int, retrieval_strategy, row: dict) -> str:
         rerank_k_str = str(rerank_k) if rerank_k is not None else NONE_ABBR
 
         # --- Construct Filename ---
-        # Format: {index}_{method}_{chunkingStrategy}-{chunkSize}-{chunkOverlapRatio}-{chunkUseSummary}_e-{embedModel}_r-{rerankModel}_{rerankTopK}
+        # Format: {index}_{method}_{chunkingStrategy}-{chunkSize}-{chunkOverlapRatio}_e-{embedModel}_r-{rerankModel}_{rerankTopK}
         filename = (
-            f"{index}_{method_abbr}_{chunk_abbr}-{chunk_size_str}-{chunk_overlap_str}-{chunk_sum_str}_"
+            f"{index}_{method_abbr}_{chunk_abbr}-{chunk_size_str}-{chunk_overlap_str}_"
             f"_e-{embed_abbr}"
             f"_r-{rerank_abbr}_{rerank_k_str}"
         )
