@@ -99,7 +99,7 @@ def generate_filename(index: int, retrieval_strategy, row: dict) -> str:
         # --- Construct Filename ---
         # Format: {index}_{method}_{chunkingStrategy}-{chunkSize}-{chunkOverlapRatio}_e-{embedModel}_r-{rerankModel}_{rerankTopK}
         filename = (
-            f"{index}_{method_abbr}_{chunk_abbr}-{chunk_size_str}-{chunk_overlap_str}_"
+            f"{index}_{method_abbr}_{chunk_abbr}-{chunk_size_str}-{chunk_overlap_str}"
             f"_e-{embed_abbr}"
             f"_r-{rerank_abbr}_{rerank_k_str}"
         )
