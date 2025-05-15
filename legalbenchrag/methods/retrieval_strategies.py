@@ -15,9 +15,9 @@ DEFAULT_SUMMARY_TRUNCATION_LENGTH = 170  # Hard truncation limit after generatio
 # Chunking Strategies (used by both Baseline and HyPA)
 chunk_strategies: List[ChunkingStrategy] = [
     ChunkingStrategy(strategy_name="rcts", chunk_size=500, chunk_overlap_ratio=0.0),
-    ChunkingStrategy(strategy_name="rcts", chunk_size=500, chunk_overlap_ratio=0.0, summary_model=DEFAULT_SUMMARIZATION_MODEL, summary_prompt_template=DEFAULT_SUMMARY_PROMPT_TEMPLATE, prompt_target_char_length=DEFAULT_PROMPT_TARGET_CHAR_LENGTH, summary_truncation_length=DEFAULT_SUMMARY_TRUNCATION_LENGTH),
+    ChunkingStrategy(strategy_name="summary_rcts", chunk_size=500, chunk_overlap_ratio=0.0, summary_model=DEFAULT_SUMMARIZATION_MODEL, summary_prompt_template=DEFAULT_SUMMARY_PROMPT_TEMPLATE, prompt_target_char_length=DEFAULT_PROMPT_TARGET_CHAR_LENGTH, summary_truncation_length=DEFAULT_SUMMARY_TRUNCATION_LENGTH),
     # ChunkingStrategy(strategy_name="naive", chunk_size=500),
-    # ChunkingStrategy(strategy_name="naive", chunk_size=500, summary_model=DEFAULT_SUMMARIZATION_MODEL, summary_prompt_template=DEFAULT_SUMMARY_PROMPT_TEMPLATE, prompt_target_char_length=DEFAULT_PROMPT_TARGET_CHAR_LENGTH, summary_truncation_length=DEFAULT_SUMMARY_TRUNCATION_LENGTH),
+    # ChunkingStrategy(strategy_name="summary_naive", chunk_size=500, summary_model=DEFAULT_SUMMARIZATION_MODEL, summary_prompt_template=DEFAULT_SUMMARY_PROMPT_TEMPLATE, prompt_target_char_length=DEFAULT_PROMPT_TARGET_CHAR_LENGTH, summary_truncation_length=DEFAULT_SUMMARY_TRUNCATION_LENGTH),
 ]
 
 # Embedding Models (used by both)
@@ -46,9 +46,9 @@ hf_rerank_bge_large = AIRerankModel(company="huggingface", model="BAAI/bge-reran
 
 
 rerank_models: list[AIRerankModel | None] = [
-    # None,
+    None,
     # cohere_rerank_model,
-    voyage_rerank_model,
+    # voyage_rerank_model,
     # hf_rerank_minilm,
     # hf_rerank_bge_base,
     # hf_rerank_bge_large,
@@ -121,8 +121,8 @@ for chunk_strategy in chunk_strategies:
 # --- Combine all strategies to be tested ---
 ALL_RETRIEVAL_STRATEGIES: List[Union[BaselineStrategy, HypaStrategy]] = []
 ALL_RETRIEVAL_STRATEGIES.extend(BASELINE_STRATEGIES)
-ALL_RETRIEVAL_STRATEGIES.extend(HYPA_STRATEGIES)
+# ALL_RETRIEVAL_STRATEGIES.extend(HYPA_STRATEGIES)
 
 print(f"Defined {len(BASELINE_STRATEGIES)} Baseline strategies.")
-print(f"Defined {len(HYPA_STRATEGIES)} HyPA strategies.")
+# print(f"Defined {len(HYPA_STRATEGIES)} HyPA strategies.")
 print(f"Total strategies to run: {len(ALL_RETRIEVAL_STRATEGIES)}")

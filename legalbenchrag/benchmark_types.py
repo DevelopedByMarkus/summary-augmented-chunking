@@ -124,6 +124,7 @@ class Document(BaseModel):
 
 class RetrievedSnippet(Snippet):
     score: float
+    full_chunk_text: str  # The actual text content of the chunk that was retrieved/reranked
 
 
 class QueryResponse(BaseModel):

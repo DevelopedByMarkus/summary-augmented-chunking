@@ -1,140 +1,185 @@
-from typing import List, Literal
+from typing import List, Optional, cast  # Added Optional
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel
+import logging  # For logging
 
 from legalbenchrag.benchmark_types import Document
+from legalbenchrag.utils.ai import AIModel, generate_document_summary  # Import new types/functions
+
+logger = logging.getLogger(__name__)  # Setup logger for this module
 
 
 class Chunk(BaseModel):
     """Represents a text chunk with its source and span."""
     file_path: str
-    span: tuple[int, int]
-    content: str
+    span: tuple[int, int]  # Span refers to the original content within the document
+    content: str  # Final content, possibly prepended with summary
 
 
 def _chunk_naive(document_content: str, chunk_size: int) -> List[tuple[int, int]]:
-    """Creates chunks of fixed character size."""
+    """Creates chunks of fixed character size from the given content."""
     spans = []
+    if chunk_size <= 0:
+        # logger.warning(f"Naive chunking called with non-positive chunk_size ({chunk_size}). Returning no spans.")
+        return spans
     for i in range(0, len(document_content), chunk_size):
         spans.append((i, min(i + chunk_size, len(document_content))))
     return spans
 
 
-def _chunk_recursive(document_content: str, chunk_size: int, chunk_overlap_ratio: float = 0) -> List[tuple[int, int]]:
-    """Creates chunks using RecursiveCharacterTextSplitter."""
+def _chunk_recursive(document_content: str, chunk_size: int, chunk_overlap_ratio: float = 0.0) -> List[tuple[int, int]]:
+    """Creates chunks using RecursiveCharacterTextSplitter from the given content."""
+    if chunk_size <= 0:
+        # logger.warning(f"Recursive chunking called with non-positive chunk_size ({chunk_size}). Returning no spans.")
+        return []
+
     splitter = RecursiveCharacterTextSplitter(
         separators=[
             "\n\n", "\n", "!", "?", ".", ":", ";", ",", " ", ""
         ],
-        chunk_size=chunk_size,
-        chunk_overlap=int(chunk_size * chunk_overlap_ratio),
+        chunk_size=chunk_size,  # This size is for the content part
+        chunk_overlap=int(chunk_size * chunk_overlap_ratio),  # Overlap for the content part
         length_function=len,
         is_separator_regex=False,
-        strip_whitespace=False,
+        strip_whitespace=True,  # Changed from False to True as per common Langchain practice
     )
-    # Splitter returns text content, we need to map back to spans
     splits = splitter.split_text(document_content)
     spans = []
-    current_pos = 0
-    for split in splits:
-        start_index = document_content.find(split, current_pos)
-        if start_index == -1:
-            # Handle cases where split might slightly differ due to stripping or internal logic
-            # This is a fallback, ideally the splitter maintains original content slices
-            # A more robust approach might involve diffing or tracking indices during splitting
-            # For now, we assume direct finding works or we approximate
-            # Let's try a search that ignores leading/trailing whitespace differences if find fails
-            approx_start_index = document_content.find(split.strip(), current_pos)
-            if approx_start_index != -1:
-                # Adjust start based on leading whitespace difference
-                original_slice = document_content[approx_start_index:]
-                leading_ws_orig = len(original_slice) - len(original_slice.lstrip())
-                leading_ws_split = len(split) - len(split.lstrip())
-                start_index = approx_start_index + (leading_ws_orig - leading_ws_split)
-                # Ensure start index is not negative
-                start_index = max(0, start_index)
-            else:
-                # If still not found, raise an error or log a warning
-                print(f"Warning: Could not reliably find chunk span for split starting near position {current_pos}. Using approximate span.")
-                # Fallback: use previous end + length, might be inaccurate
-                start_index = current_pos  # Approximate start
-
-        # Check if the found content actually matches (ignoring potential minor whitespace diffs from splitter)
-        end_index = start_index + len(split)
-        # Ensure the found text is reasonably close to the split text
-        # if document_content[start_index:end_index].strip() != split.strip():
-        #     print(f"Warning: Span mismatch detected for chunk. Found '{document_content[start_index:end_index]}' vs Split '{split}'")
-            # Decide how to handle mismatch - maybe skip chunk, use approximate, etc.
-
-        # Ensure end_index doesn't exceed document length
-        end_index = min(end_index, len(document_content))
-        # Ensure start_index doesn't exceed end_index (can happen with empty splits)
-        if start_index >= end_index and len(split) > 0:
-             print(f"Warning: Calculated invalid span ({start_index}, {end_index}) for non-empty split. Skipping.")
-             continue # Skip this potentially problematic chunk
-        elif start_index > len(document_content):
-             print(f"Warning: Start index {start_index} exceeds document length {len(document_content)}. Skipping.")
-             continue
-
-
-        spans.append((start_index, end_index))
-        # Update current_pos for the next search, considering overlap
-        # Move forward by chunk size minus overlap to find the next potential start
-        current_pos = max(start_index + 1, end_index - int(chunk_size * chunk_overlap_ratio))
-        # Ensure current_pos doesn't go backward if chunks are very small/overlap large
-        current_pos = max(current_pos, start_index + 1 if len(split) > 0 else start_index)
-
-
-    # Simple verification: check if total length of spanned content roughly matches original
-    # total_spanned_length = sum(end - start for start, end in spans)
-    # if abs(total_spanned_length - len(document_content)) > len(document_content) * 0.1: # Allow 10% diff for overlap/approximations
-    #      print(f"Warning: Total spanned length {total_spanned_length} differs significantly from original {len(document_content)}")
-
+    current_search_pos = 0
+    for split_text in splits:
+        if not split_text.strip():
+            continue
+        try:
+            start_index = document_content.index(split_text, current_search_pos)
+            end_index = start_index + len(split_text)
+            spans.append((start_index, end_index))
+            current_search_pos = start_index + 1
+        except ValueError:
+            logger.warning(
+                f"Could not find exact match for RCTS split text in document '{document.file_path}'. "  # type: ignore
+                f"Split: '{split_text[:50]}...'. This split will be skipped."
+            )
+            # Attempting to advance current_search_pos naively if a split fails can lead to
+            # missing subsequent valid splits or incorrect span calculations.
+            # It's safer to skip the problematic split and log it.
+            # A more sophisticated approach might use fuzzy matching or diff algorithms,
+            # but that adds significant complexity.
     return spans
 
 
-def get_chunks(
-    document: Document,
-    strategy_name: Literal["naive", "rcts"],
-    chunk_size: int,
-    **kwargs
+async def get_chunks(  # Made async
+        document: Document,
+        strategy_name: str,
+        chunk_size: int,  # For summary strategies, this is TOTAL target chunk size
+        **kwargs
 ) -> List[Chunk]:
     """
     Splits a document into chunks based on the specified strategy.
-
-    Args:
-        document: The Document object to chunk.
-        strategy_name: The chunking strategy ('naive' or 'rcts').
-        chunk_size: The target size for each chunk (characters).
-        **kwargs: Additional arguments for specific strategies (e.g., chunk_overlap_ratio for rcts).
-
-    Returns:
-        A list of Chunk objects.
+    Supports new strategies that prepend a document summary.
     """
-    spans: List[tuple[int, int]] = []
-    if strategy_name == "naive":
-        spans = _chunk_naive(document.content, chunk_size)
-    elif strategy_name == "rcts":
-        overlap_ratio = kwargs.get("chunk_overlap_ratio", 0.1)  # Default overlap
-        spans = _chunk_recursive(document.content, chunk_size, chunk_overlap_ratio=overlap_ratio)
-    else:
-        raise ValueError(f"Unknown chunking strategy: {strategy_name}")
+    final_chunks: List[Chunk] = []
+    document_summary = ""  # Initialize summary
+    is_summary_strategy = strategy_name.startswith("summary_")
 
-    chunks = [
-        Chunk(
-            file_path=document.file_path,
-            span=span,
-            content=document.content[span[0]:span[1]]
+    if not is_summary_strategy and cast(Optional[AIModel], kwargs.get("summarization_model")):
+        logger.warning("Couldn't find 'summary_' in the chunking strategy name, but contains a summarization_model!")
+
+    if is_summary_strategy:
+        summarization_model = cast(Optional[AIModel], kwargs.get("summarization_model"))
+        summary_prompt_template = cast(Optional[str], kwargs.get("summary_prompt_template"))
+        prompt_target_char_length = cast(int, kwargs.get("prompt_target_char_length", 150))
+        summary_truncation_length = cast(int, kwargs.get("summary_truncation_length", 170))
+        summaries_base_dir = "./data/summaries"
+
+        if not summarization_model or not summary_prompt_template:
+            logger.error(
+                f"Summarization model or prompt template not provided for strategy '{strategy_name}' "
+                f"on document {document.file_path}. Summary step will be skipped (fallback in generate_document_summary)."
+            )
+            # generate_document_summary has its own fallback, so we can still call it.
+            # It will use the first N chars of the document.
+            document_summary = await generate_document_summary(  # Fallback will be used
+                document_file_path=document.file_path,
+                document_content=document.content,
+                # Passing None or incorrect model would cause issues; ensure fallback in generate_document_summary is robust
+                summarization_model=AIModel(company="openai", model="gpt-4o-mini"),
+                # Dummy, will trigger fallback if openai only
+                summary_prompt_template="FALLBACK_DUE_TO_MISSING_CONFIG",  # Indicates issue
+                prompt_target_char_length=prompt_target_char_length,
+                truncate_char_length=summary_truncation_length,
+                summaries_output_dir_base=summaries_base_dir
+            )
+
+        else:
+            # logger.info(f"Generating summary for document: {document.file_path} using strategy {strategy_name}")
+            document_summary = await generate_document_summary(
+                document_file_path=document.file_path,
+                document_content=document.content,
+                summarization_model=summarization_model,
+                summary_prompt_template=summary_prompt_template,
+                prompt_target_char_length=prompt_target_char_length,
+                truncate_char_length=summary_truncation_length,
+                summaries_output_dir_base=summaries_base_dir
+            )
+
+    # Determine content chunking details
+    content_strategy_name = strategy_name.split("summary_")[-1] if is_summary_strategy else strategy_name
+
+    # Define the format for summary prefix
+    summary_prefix = f"[document summary] {document_summary}\n[content] " if is_summary_strategy and document_summary else ""
+    # If not a summary strategy, or if summary is empty (e.g. after fallback from failed LLM), prefix is empty.
+    # If summary strategy AND summary is present, then prefix is used.
+
+    actual_summary_component_len = len(
+        summary_prefix)  # This includes the "[document summary]..." and "[content]" parts
+
+    # chunk_size is the TOTAL desired length. Content part should be total minus summary component.
+    content_chunk_target_size = chunk_size - actual_summary_component_len
+
+    if is_summary_strategy and content_chunk_target_size <= 0:
+        logger.warning(
+            f"For document {document.file_path} with strategy {strategy_name}, "
+            f"summary component length ({actual_summary_component_len}) "
+            f"is >= total chunk_size ({chunk_size}). Resulting content chunks will be empty or not generated. "
+            f"Content target size: {content_chunk_target_size}."
         )
-        for span in spans if span[1] > span[0]  # Ensure non-empty chunks
-    ]
+        # Allow chunking functions to receive <=0, they should handle it by returning no spans.
 
-    # Verification (optional but recommended)
-    reconstructed_length = sum(len(c.content) for c in chunks)
-    original_length = len(document.content)
-    # Naive should reconstruct perfectly. Recursive might differ due to overlap/splitting.
-    if strategy_name == 'naive' and reconstructed_length != original_length:
-        print(f"Warning: Naive chunking reconstruction mismatch. Original: {original_length}, Reconstructed: {reconstructed_length}")
+    # Perform content chunking based on the original document content
+    content_spans: List[tuple[int, int]] = []
+    if content_strategy_name == "naive":
+        content_spans = _chunk_naive(document.content, content_chunk_target_size)
+    elif content_strategy_name == "rcts":
+        overlap_ratio = cast(float, kwargs.get("chunk_overlap_ratio", 0.0))  # Use 0.0 as default if not summary_rcts
+        content_spans = _chunk_recursive(document.content, content_chunk_target_size, chunk_overlap_ratio=overlap_ratio)
+    else:
+        raise ValueError(f"Unknown base chunking strategy derived: {content_strategy_name} from {strategy_name}")
 
-    return chunks
+    # Construct final Chunk objects
+    for span_start, span_end in content_spans:
+        if span_end <= span_start:
+            continue  # Should be handled by _chunk_xxx if target_size <=0, but defensive check.
+
+        original_content_text = document.content[span_start:span_end]
+
+        # Prepend summary if it's a summary strategy and summary text exists
+        if is_summary_strategy and document_summary:
+            # Using the refined format from user
+            final_chunk_text = f"[document summary] {document_summary}\n[content] {original_content_text}"
+        else:
+            final_chunk_text = original_content_text
+
+        final_chunks.append(
+            Chunk(
+                file_path=document.file_path,
+                span=(span_start, span_end),
+                content=final_chunk_text
+            )
+        )
+
+    if not final_chunks and len(document.content) > 0 and content_chunk_target_size > 0:  # Added condition
+        logger.warning(
+            f"No chunks were generated for document {document.file_path} (len: {len(document.content)}) with strategy {strategy_name}, total_chunk_size {chunk_size}, content_target_size {content_chunk_target_size}.")
+
+    return final_chunks

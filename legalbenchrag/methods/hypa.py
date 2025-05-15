@@ -1,15 +1,15 @@
 import asyncio
-from typing import List, Dict, Literal
+import os
+from typing import List, Dict, Literal, Optional  # Added Optional
 import logging
 
 # LlamaIndex imports
-from llama_index.core import VectorStoreIndex, Document as LlamaDocument, Settings
-from llama_index.core.schema import NodeWithScore, BaseNode, TextNode
+from llama_index.core import VectorStoreIndex, Settings
+from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.retrievers import BaseRetriever
 from llama_index.core.embeddings import BaseEmbedding
 
-# Import specific embedding integrations if needed for instantiation helper
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.embeddings.cohere import CohereEmbedding
@@ -28,11 +28,11 @@ from legalbenchrag.utils.ai import (
     AIEmbeddingModel,
     AIEmbeddingType,
     AIRerankModel,
+    AIModel,  # Added AIModel for summary
     ai_embedding,
     ai_rerank,
 )
-# Import new chunking utility
-from legalbenchrag.utils.chunking import Chunk, get_chunks
+from legalbenchrag.utils.chunking import Chunk, get_chunks  # get_chunks is now async
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +41,23 @@ logger = logging.getLogger(__name__)
 class HypaStrategy(BaseModel):
     """Configuration specific to the HyPA retrieval method."""
     method_name: str = "hypa"
-    # Add chunking strategy config to match baseline
-    chunk_strategy_name: Literal["naive", "rcts"] = "rcts"
-    chunk_size: int
-    chunk_overlap_ratio: float = 0.0
-    embedding_model: AIEmbeddingModel  # We'll pass this to LlamaIndex
-    embedding_top_k: int  # Used for initial vector retrieval before fusion
-    bm25_top_k: int  # Used for initial bm25 retrieval before fusion
-    fusion_top_k: int  # Number of results after fusion / before reranking
+    # Updated Literal to include new summary strategies
+    chunk_strategy_name: Literal["naive", "rcts", "summary_naive", "summary_rcts"] = "rcts"
+    chunk_size: int  # For summary strategies, this is the TOTAL target length
+    chunk_overlap_ratio: float = 0.0  # Used if base strategy is rcts
+
+    # New fields for summarization - these will be None for non-summary strategies
+    summary_model: Optional[AIModel] = None
+    summary_prompt_template: Optional[str] = None
+    prompt_target_char_length: int = 150
+    summary_truncation_length: int = 170
+
+    embedding_model: AIEmbeddingModel
+    embedding_top_k: int
+    bm25_top_k: int
+    fusion_top_k: int
     rerank_model: AIRerankModel | None = None
-    rerank_top_k: int | None = None # Final number of results after reranking
+    rerank_top_k: int | None = None
 
 
 # --- Helper Function for Fusion ---
@@ -67,47 +74,50 @@ def fuse_results(results_dict: Dict[str, List[NodeWithScore]], similarity_top_k:
     # Deduplicate nodes based on node_id first, keeping the highest score
     unique_nodes_by_id: Dict[str, NodeWithScore] = {}
     for node_with_score in all_nodes_with_scores:
-        node_id = node_with_score.node.node_id
-        # Ensure score is not None before comparison
+        node_id = node_with_score.node.node_id  # type: ignore
         current_score = node_with_score.score if node_with_score.score is not None else -float('inf')
-        existing_score = unique_nodes_by_id[node_id].score if node_id in unique_nodes_by_id and unique_nodes_by_id[node_id].score is not None else -float('inf')
 
-        if node_id not in unique_nodes_by_id or current_score > existing_score:
-             unique_nodes_by_id[node_id] = node_with_score
+        existing_node_entry = unique_nodes_by_id.get(node_id)
+        existing_score = -float('inf')
+        if existing_node_entry and existing_node_entry.score is not None:
+            existing_score = existing_node_entry.score
+
+        if node_id not in unique_nodes_by_id or current_score > existing_score:  # type: ignore
+            unique_nodes_by_id[node_id] = node_with_score  # type: ignore
 
     sorted_nodes = sorted(unique_nodes_by_id.values(), key=lambda x: x.score or 0.0, reverse=True)
 
     for rank, node_with_score in enumerate(sorted_nodes):
-        node_id = node_with_score.node.node_id
-        text_to_node[node_id] = node_with_score
-        if node_id not in fused_scores:
-            fused_scores[node_id] = 0.0
-        fused_scores[node_id] += 1.0 / (rank + k)
+        node_id = node_with_score.node.node_id  # type: ignore
+        text_to_node[node_id] = node_with_score  # type: ignore
+        if node_id not in fused_scores:  # type: ignore
+            fused_scores[node_id] = 0.0  # type: ignore
+        fused_scores[node_id] += 1.0 / (rank + k)  # type: ignore
 
     reranked_ids = sorted(fused_scores.keys(), key=lambda x: fused_scores[x], reverse=True)
 
     reranked_nodes: List[NodeWithScore] = []
     for node_id in reranked_ids:
         node_with_score = text_to_node[node_id]
-        node_with_score.score = fused_scores[node_id]  # Update score to RRF score
+        node_with_score.score = fused_scores[node_id]
         reranked_nodes.append(node_with_score)
 
     return reranked_nodes[:similarity_top_k]
+
 
 # --- HyPA Retrieval Method Implementation ---
 class HypaRetrievalMethod(RetrievalMethod):
     strategy: HypaStrategy
     documents: Dict[str, BenchmarkDocument]
-    nodes: List[BaseNode] | None  # Store LlamaIndex TextNode objects
+    nodes: List[TextNode] | None  # Explicitly TextNode for HyPA
     vector_index: VectorStoreIndex | None
     bm25_retriever: BM25Retriever | None
-    # Store the instantiated embed model for potential reuse/check
     _llama_embed_model: BaseEmbedding | None = None
 
     def __init__(self, strategy: HypaStrategy):
         self.strategy = strategy
         self.documents = {}
-        self.nodes = None
+        self.nodes = None  # Initialize as None
         self.vector_index = None
         self.bm25_retriever = None
         self._llama_embed_model = None
@@ -115,42 +125,39 @@ class HypaRetrievalMethod(RetrievalMethod):
     def _get_llama_embed_model(self) -> BaseEmbedding:
         """Maps the strategy's AIEmbeddingModel to a LlamaIndex BaseEmbedding instance."""
         if self._llama_embed_model:
-            # Simple check if model type matches, avoids re-instantiation if strategy is the same
-            # Note: This doesn't deeply compare model parameters. Assumes if strategy object is same, model is.
-            # A more robust check might compare self.strategy.embedding_model attributes.
             current_model_config = self.strategy.embedding_model
-            if isinstance(self._llama_embed_model, OpenAIEmbedding) and current_model_config.company == 'openai' and self._llama_embed_model.model == current_model_config.model:
+            if isinstance(self._llama_embed_model,
+                          OpenAIEmbedding) and current_model_config.company == 'openai' and self._llama_embed_model.model_name == current_model_config.model:  # Changed .model to .model_name
                 return self._llama_embed_model
-            if isinstance(self._llama_embed_model, HuggingFaceEmbedding) and current_model_config.company == 'huggingface' and self._llama_embed_model.model_name == current_model_config.model:
+            if isinstance(self._llama_embed_model,
+                          HuggingFaceEmbedding) and current_model_config.company == 'huggingface' and self._llama_embed_model.model_name == current_model_config.model:
                 return self._llama_embed_model
-            # Add similar checks for Cohere, VoyageAI if needed
+            if isinstance(self._llama_embed_model,
+                          CohereEmbedding) and current_model_config.company == 'cohere' and self._llama_embed_model.model_name == current_model_config.model:  # Changed .model to .model_name
+                return self._llama_embed_model
+            if isinstance(self._llama_embed_model,
+                          VoyageEmbedding) and current_model_config.company == 'voyageai' and self._llama_embed_model.model_name == current_model_config.model:  # Changed .model to .model_name
+                return self._llama_embed_model
 
-        print(f"HyPA: Instantiating LlamaIndex embedding model for: {self.strategy.embedding_model.company} / {self.strategy.embedding_model.model}")
+        print(
+            f"HyPA: Instantiating LlamaIndex embedding model for: {self.strategy.embedding_model.company} / {self.strategy.embedding_model.model}")
         model_config = self.strategy.embedding_model
         embed_model: BaseEmbedding
 
         if model_config.company == 'openai':
-            # Assuming API key is set globally via env var OPENAI_API_KEY
-            embed_model = OpenAIEmbedding(model=model_config.model)
+            embed_model = OpenAIEmbedding(model=model_config.model, api_key=os.getenv("OPENAI_API_KEY"))
         elif model_config.company == 'huggingface':
-            # Use trust_remote_code=True always as requested
             embed_model = HuggingFaceEmbedding(
                 model_name=model_config.model,
-                # device="cuda" # Optional: specify device, defaults to auto
                 trust_remote_code=True
             )
         elif model_config.company == 'cohere':
-            # Assuming API key is set globally via env var COHERE_API_KEY
-             embed_model = CohereEmbedding(
-                 model_name=model_config.model,
-                 # input_type might be needed depending on LlamaIndex version/defaults
-                 # input_type="search_document" # Or handle based on context? Usually default is okay.
-             )
+            embed_model = CohereEmbedding(
+                model_name=model_config.model,
+                cohere_api_key=os.getenv("COHERE_API_KEY")
+            )
         elif model_config.company == 'voyageai':
-             # Assuming API key is set globally via env var VOYAGEAI_API_KEY
-             embed_model = VoyageEmbedding(model_name=model_config.model)
-             # input_type might be needed
-             # input_type="document"
+            embed_model = VoyageEmbedding(model_name=model_config.model, voyage_api_key=os.getenv("VOYAGEAI_API_KEY"))
         else:
             raise ValueError(f"Unsupported embedding company in HypaStrategy: {model_config.company}")
 
@@ -163,28 +170,42 @@ class HypaRetrievalMethod(RetrievalMethod):
 
     async def sync_all_documents(self) -> None:
         """Process documents, create nodes with cached embeddings, build indices."""
-        print("HyPA: Calculating chunks...")
-        all_chunks: List[Chunk] = []
+        print(f"HyPA: Calculating chunks using strategy '{self.strategy.chunk_strategy_name}'...")
+
+        # Prepare kwargs for get_chunks
+        chunking_params = {
+            "strategy_name": self.strategy.chunk_strategy_name,
+            "chunk_size": self.strategy.chunk_size,  # Total size for summary strats
+            "chunk_overlap_ratio": self.strategy.chunk_overlap_ratio,
+        }
+        if self.strategy.chunk_strategy_name.startswith("summary_"):
+            chunking_params["summarization_model"] = self.strategy.summary_model
+            chunking_params["summary_prompt_template"] = self.strategy.summary_prompt_template
+            chunking_params["prompt_target_char_length"] = self.strategy.prompt_target_char_length
+            chunking_params["summary_truncation_length"] = self.strategy.summary_truncation_length
+
+        all_chunks_tasks: List[asyncio.Task[List[Chunk]]] = []
         for document in self.documents.values():
-            chunks_for_doc = get_chunks(
-                document=document,
-                strategy_name=self.strategy.chunk_strategy_name,
-                chunk_size=self.strategy.chunk_size,
-                chunk_overlap_ratio=self.strategy.chunk_overlap_ratio,
-            )
-            all_chunks.extend(chunks_for_doc)
+            # get_chunks is now async
+            task = asyncio.create_task(get_chunks(document=document, **chunking_params))  # type: ignore
+            all_chunks_tasks.append(task)
+
+        results_of_chunking_tasks = await asyncio.gather(*all_chunks_tasks)
+        all_chunks: List[Chunk] = []
+        for chunk_list_for_doc in results_of_chunking_tasks:
+            all_chunks.extend(chunk_list_for_doc)
+
         print(f"HyPA: Created {len(all_chunks)} chunks.")
 
         if not all_chunks:
             print("HyPA: No chunks created, skipping index creation.")
-            self.nodes = []
+            self.nodes = []  # Ensure nodes is initialized as empty list
             return
 
         # 1. Fetch embeddings using ai_embedding (utilizes cache)
-        chunk_contents = [chunk.content for chunk in all_chunks]
+        chunk_contents = [chunk.content for chunk in all_chunks]  # These contents include summaries
         model_config = self.strategy.embedding_model
 
-        # Setup progress bar using tqdm.asyncio
         pbar = tqdm(total=len(chunk_contents), desc="HyPA Embeddings", ncols=100)
 
         def progress_callback():
@@ -199,27 +220,31 @@ class HypaRetrievalMethod(RetrievalMethod):
         pbar.close()
 
         if len(embeddings) != len(all_chunks):
-            raise ValueError(f"HyPA Error: Mismatch between number of chunks ({len(all_chunks)}) and obtained embeddings ({len(embeddings)}).")
+            logger.error(
+                f"HyPA Critical Error: Mismatch between chunks ({len(all_chunks)}) and embeddings ({len(embeddings)}) count.")
+            raise ValueError(f"HyPA Error: Mismatch between number of chunks and obtained embeddings.")
 
         # 2. Create LlamaIndex TextNodes with pre-computed embeddings
         print("HyPA: Creating LlamaIndex TextNodes with pre-computed embeddings...")
-        self.nodes = []
+        self.nodes = []  # Initialize as list of TextNode
         for i, (chunk, embedding) in enumerate(zip(all_chunks, embeddings)):
-            # Create a unique node ID based on file and span
+            # Create a unique node ID based on file and span of original content
             node_id = f"{chunk.file_path}_{chunk.span[0]}_{chunk.span[1]}"
             node = TextNode(
                 id_=node_id,
-                text=chunk.content,
+                text=chunk.content,  # This text includes the summary
                 metadata={
                     "file_path": chunk.file_path,
-                    # No need for start/end in metadata if directly on node
+                    # Store original content span in metadata for consistent snippet creation
+                    "original_span_start": chunk.span[0],
+                    "original_span_end": chunk.span[1],
                 },
-                # Directly set start/end char indices on the node
-                start_char_idx=chunk.span[0],
-                end_char_idx=chunk.span[1],
-                embedding=embedding,  # <--- Pass the pre-fetched embedding here
-                # Ensure relationships are clear if needed, default is usually okay
-                # relationships={...}
+                # Removed start_char_idx and end_char_idx from TextNode direct attributes
+                # as LlamaIndex typically infers these from text or they are less critical
+                # when metadata holds the primary span. If needed by specific LlamaIndex features,
+                # they would refer to spans within chunk.content (summary + original).
+                # For our purposes, original_span in metadata is key.
+                embedding=embedding,
             )
             self.nodes.append(node)
         print(f"HyPA: Created {len(self.nodes)} TextNodes with embeddings.")
@@ -230,18 +255,16 @@ class HypaRetrievalMethod(RetrievalMethod):
 
         # 4. Build In-Memory Vector Index using the TextNodes with pre-computed embeddings
         print("HyPA: Building vector index from nodes with pre-computed embeddings...")
-        # Pass nodes directly, LlamaIndex should use the provided embeddings
-        self.vector_index = VectorStoreIndex(
-            self.nodes,
-            show_progress=False,
-            # service_context=None # Deprecated, use Settings
+        self.vector_index = VectorStoreIndex(  # Pass self.nodes directly
+            self.nodes,  # type: ignore
+            show_progress=True,  # Changed to True
         )
         print("HyPA: Vector index built.")
 
         # 5. Build BM25 Retriever using the TextNodes
         print("HyPA: Building BM25 retriever...")
         self.bm25_retriever = BM25Retriever.from_defaults(
-            nodes=self.nodes,  # Use the same nodes
+            nodes=self.nodes,  # type: ignore
             similarity_top_k=self.strategy.bm25_top_k
         )
         print("HyPA: BM25 retriever built.")
@@ -249,24 +272,19 @@ class HypaRetrievalMethod(RetrievalMethod):
     async def query(self, query: str) -> QueryResponse:
         """Perform HyPA retrieval: vector + bm25 + fusion + optional reranking."""
         if self.vector_index is None or self.bm25_retriever is None or self.nodes is None:
-            # Handle case where sync didn't create nodes
-            if self.nodes is not None and not self.nodes:  # Check if nodes is an empty list
+            if self.nodes is not None and not self.nodes:
                 print("HyPA Query: No nodes available for querying (list is empty). Returning empty response.")
                 return QueryResponse(retrieved_snippets=[])
             raise ValueError("Indices not synchronized. Call sync_all_documents first.")
 
         # 1. Get Retrievers
-        # Vector retriever uses the index (which used the correct embed model)
         vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.strategy.embedding_top_k)
-        # BM25 retriever was already configured with nodes and top_k
         bm25_retriever = self.bm25_retriever
-        # Ensure bm25 top_k is set correctly per query based on strategy (already done at init usually)
-        # bm25_retriever.similarity_top_k = self.strategy.bm25_top_k
 
-        retrievers: List[BaseRetriever] = [vector_retriever, bm25_retriever]
+        retrievers: List[BaseRetriever] = [vector_retriever, bm25_retriever]  # type: ignore
 
         # 2. Run retrievals asynchronously
-        tasks = [retriever.aretrieve(query) for retriever in retrievers]
+        tasks = [retriever.aretrieve(query) for retriever in retrievers]  # type: ignore
         task_results: List[List[NodeWithScore]] = await asyncio.gather(*tasks)
 
         results_dict = {
@@ -280,58 +298,51 @@ class HypaRetrievalMethod(RetrievalMethod):
         # 4. Optional Reranking Step
         final_nodes = fused_nodes
         if self.strategy.rerank_model and self.strategy.rerank_top_k is not None and fused_nodes:
-            logger.debug(f"HyPA: Reranking {len(fused_nodes)} fused nodes with {self.strategy.rerank_model.company}/{self.strategy.rerank_model.model} (top_k={self.strategy.rerank_top_k})...")
-            # Extract text content from fused nodes for the reranker
-            texts_to_rerank = [node.get_content() for node in fused_nodes]
+            logger.debug(
+                f"HyPA: Reranking {len(fused_nodes)} fused nodes with {self.strategy.rerank_model.company}/{self.strategy.rerank_model.model} (top_k={self.strategy.rerank_top_k})...")
+            texts_to_rerank = [node.get_content() for node in fused_nodes]  # Content includes summary
 
-            # Call the centralized ai_rerank function
             reranked_indices = await ai_rerank(
                 model=self.strategy.rerank_model,
                 query=query,
                 texts=texts_to_rerank,
                 top_k=self.strategy.rerank_top_k
             )
-
-            # Reorder the fused_nodes list based on the reranked indices
-            # Keep the original NodeWithScore objects but in the new order
             final_nodes = [fused_nodes[i] for i in reranked_indices]
-            # print(f"HyPA: Reranking complete, {len(final_nodes)} nodes remaining.")
-            # Update scores? Optional: Could update node scores based on reranker score,
-            # but reranker scores are not directly comparable. Keeping RRF score might be okay.
-            # Or set a simple rank-based score:
-            # for rank, node_with_score in enumerate(final_nodes):
-            #     node_with_score.score = 1.0 / (rank + 1)
+            # Update scores to reflect reranking order
+            for rank, node_with_score in enumerate(final_nodes):
+                node_with_score.score = 1.0 / (rank + 1.0)  # Simple rank-based score
 
         # 5. Map Final LlamaIndex Nodes to LegalBenchRAG Snippets
         retrieved_snippets: List[RetrievedSnippet] = []
         for node_with_score in final_nodes:
             node = node_with_score.node
-            # Node should be a TextNode with the info we added
-            if isinstance(node, TextNode):
+            if isinstance(node, TextNode):  # Ensure it's a TextNode
                 file_path = node.metadata.get("file_path")
-                start_idx = node.start_char_idx
-                end_idx = node.end_char_idx
-                # Use the score from the NodeWithScore object (either RRF or potentially updated by reranker step)
+                # Retrieve the original content span from metadata
+                original_span_start = node.metadata.get("original_span_start")
+                original_span_end = node.metadata.get("original_span_end")
                 score = node_with_score.score if node_with_score.score is not None else 0.0
+                current_full_chunk_text = node.get_content()
 
-                if file_path and start_idx is not None and end_idx is not None:
+                if file_path and original_span_start is not None and original_span_end is not None:
                     retrieved_snippets.append(
                         RetrievedSnippet(
                             file_path=str(file_path),
-                            span=(int(start_idx), int(end_idx)),
-                            score=float(score)
+                            span=(int(original_span_start), int(original_span_end)),  # Use original span
+                            score=float(score),
+                            full_chunk_text=current_full_chunk_text  # Span conditionally including summary
                         )
                     )
-                else:
-                    missing = []
-                    if not file_path: missing.append("file_path")
-                    if start_idx is None: missing.append("start_char_idx")
-                    if end_idx is None: missing.append("end_char_idx")
-                    print(f"HyPA WARNING: Node {node.node_id} missing required info ({', '.join(missing)}). Skipping.")
+                else:  # Log missing metadata more informatively
+                    missing_meta = [item for item in ["file_path", "original_span_start", "original_span_end"] if
+                                    node.metadata.get(item) is None]
+                    logger.warning(
+                        f"HyPA WARNING: Node {node.node_id} missing metadata: {', '.join(missing_meta)}. Skipping.")
             else:
-                print(f"HyPA WARNING: Retrieved node {node.node_id} is not a TextNode. Skipping.")
+                logger.warning(
+                    f"HyPA WARNING: Retrieved node {node.node_id} is not a TextNode but {type(node)}. Skipping.")  # type: ignore
 
-        # print(f"HyPA: Returning {len(retrieved_snippets)} snippets.")
         return QueryResponse(retrieved_snippets=retrieved_snippets)
 
     async def cleanup(self) -> None:
@@ -341,6 +352,5 @@ class HypaRetrievalMethod(RetrievalMethod):
         self.vector_index = None
         self.bm25_retriever = None
         self._llama_embed_model = None
-        # Optionally reset LlamaIndex global settings if they interfere elsewhere
-        # Settings.embed_model = None # Or reset to a default
+        # Settings.embed_model = None # Optional: Reset LlamaIndex global settings
         print("HyPA: Cleanup complete.")
