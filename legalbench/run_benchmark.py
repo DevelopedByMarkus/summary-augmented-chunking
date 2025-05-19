@@ -41,13 +41,13 @@ def main():
     evaluate("abercrombie", generations, test_df["answer"].tolist())
 
     # Select tasks by licence
-    target_license = "CC BY 4.0"
-    tasks_with_target_license = []
-    for task in tqdm(TASKS):
-        dataset = datasets.load_dataset("nguha/legalbench", task, split="train")
-        if dataset.info.license == target_license:
-            tasks_with_target_license.append(task)
-    print("Tasks with target license:", tasks_with_target_license)
+    # target_license = "CC BY 4.0"
+    # tasks_with_target_license = []
+    # for task in tqdm(TASKS):
+    #     dataset = datasets.load_dataset("nguha/legalbench", task, split="train")
+    #     if dataset.info.license == target_license:
+    #         tasks_with_target_license.append(task)
+    # print("Tasks with target license:", tasks_with_target_license)
 
 
 if __name__ == "__main__":
