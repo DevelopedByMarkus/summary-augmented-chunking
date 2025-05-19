@@ -1,54 +1,176 @@
 from tqdm.auto import tqdm
 import datasets
+import numpy as np
+import os
 
-from tasks import TASKS, ISSUE_TASKS
+from tasks import TASKS
 from utils import generate_prompts
+from evaluation import evaluate
+
+# Cache to avoid repeated API calls for the same task's license
+_license_cache = {}
+
+
+def get_task_license(task_name, repo_id="nguha/legalbench"):
+    if task_name in _license_cache:
+        return _license_cache[task_name]
+    try:
+        builder = datasets.load_dataset_builder(repo_id, task_name)
+        license_info = builder.info.license
+        _license_cache[task_name] = license_info
+        return license_info
+    except Exception as e:
+        print(f"Warning: Could not retrieve license for task '{task_name}': {e}")
+        _license_cache[task_name] = None  # Cache failure to avoid retrying
+        return None
+
+
+def get_selected_tasks(
+    license_filter=None,
+    include_tasks=None,
+    ignore_tasks=None,
+):
+    """
+    Filters TASKS based on license, inclusion list, and exclusion list.
+
+    Args:
+        license_filter (str, optional): Only include tasks with this license. Defaults to None.
+        include_tasks (list, optional): A list of task names to specifically include.
+                                       If None, all tasks (after license filter) are considered.
+                                       Defaults to None.
+        ignore_tasks (list, optional): A list of task names to specifically exclude.
+                                      Defaults to None.
+
+    Returns:
+        list: A list of selected task names.
+    """
+    candidate_tasks = []
+
+    # 1. Start with include_tasks if provided, otherwise all TASKS
+    if include_tasks is not None:
+        # Validate tasks in include_tasks
+        for task_name in include_tasks:
+            if task_name not in TASKS:
+                print(f"Warning: Task '{task_name}' from 'include_tasks' is not in TASKS. Skipping.")
+            else:
+                candidate_tasks.append(task_name)
+    else:
+        candidate_tasks = list(TASKS)
+
+    # 2. Apply license filter (highest priority after forming initial candidates)
+    if license_filter:
+        licensed_tasks = []
+        print(f"Applying license filter: '{license_filter}'")
+        for task_name in tqdm(candidate_tasks, desc="Checking licenses"):
+            task_license = get_task_license(task_name)
+            if task_license == license_filter:
+                licensed_tasks.append(task_name)
+            elif task_name in (include_tasks or []): # If explicitly included but license mismatch
+                print(f"Warning: Task '{task_name}' was in 'include_tasks' but does not match license '{license_filter}' (license: {task_license}). Skipping.")
+        candidate_tasks = licensed_tasks
+        print(f"Tasks after license filter: {candidate_tasks}")
+    else:
+        print("No license filter applied.")
+
+    # 3. Apply ignore_tasks
+    final_selected_tasks = []
+    if ignore_tasks:
+        for task_name in candidate_tasks:
+            if task_name in ignore_tasks:
+                if include_tasks and task_name in include_tasks:
+                    print(f"Warning: Task '{task_name}' is in both 'include_tasks' and 'ignore_tasks'. Prioritizing 'include_tasks' - task will be USED.")
+                    final_selected_tasks.append(task_name)
+                else:
+                    print(f"Ignoring task: {task_name}")
+                    continue
+            else:
+                final_selected_tasks.append(task_name)
+    else:
+        final_selected_tasks = list(candidate_tasks)
+
+    print(f"--- Selected {len(final_selected_tasks)} tasks: ---\n{final_selected_tasks}")
+    return final_selected_tasks
 
 
 def main():
-
-    # Supress progress bars which appear every time a task is downloaded
+    # Supress progress bars for dataset loading if desired
     # datasets.utils.logging.set_verbosity_error()
 
-    # Debug
-    print(len(TASKS), TASKS[:10])
-    print()
-    print(len(ISSUE_TASKS), ISSUE_TASKS)
+    print("All available tasks (count):", len(TASKS))
 
-    # download the datasets
-    dataset = datasets.load_dataset("nguha/legalbench", "abercrombie")
-    dataset["train"].to_pandas()
-    print(dataset)
+    # Select the desired tasks
+    tasks_to_run = get_selected_tasks(
+        # Apply the following if needed
+        # license_filter=XXX,
+        # include_tasks=XXX,
+        # ignore_tasks=XXX,
+    )
 
-    # Load base prompt
-    with open(f"tasks/abercrombie/base_prompt.txt") as in_file:
-        prompt_template = in_file.read()
-    print(prompt_template)
+    if not tasks_to_run:
+        print("\nNo tasks selected to run. Exiting.")
+        return
 
-    # Create full prompts
-    test_df = dataset["test"].to_pandas()
-    prompts = generate_prompts(prompt_template=prompt_template, data_df=test_df)
-    print(prompts[0])
+    base_task_files_path = "tasks"
 
-    # Evaluation
-    from evaluation import evaluate
-    import numpy as np
+    print(f"\n--- Running RAG pipeline for selected {len(tasks_to_run)} tasks ---")
+    for task_name in tasks_to_run:
+        print(f"\nProcessing task: {task_name}")
+        try:
+            # 1. Download the dataset for the task
+            print(f"Loading dataset for {task_name}...")
+            dataset_splits = {}
+            try:
+                dataset_splits["test"] = datasets.load_dataset("nguha/legalbench", task_name, split="test")
+            except Exception as e:
+                print(f"Could not load 'test' split for {task_name}: {e}. Skipping task.")
+                continue
+            try:
+                # Train split might not always be used for prompting in zero-shot, but good to load if available/needed
+                dataset_splits["train"] = datasets.load_dataset("nguha/legalbench", task_name, split="train")
+            except Exception as e:
+                print(f"Could not load 'train' split for {task_name}: {e}. Proceeding without train split.")
+            print("Download finished")
 
-    # Generate random predictions for abercrombie
-    classes = ["generic", "descriptive", "suggestive", "arbitrary", "fanciful"]
-    generations = np.random.choice(classes, len(test_df))
+            # 2. Load base prompt
+            prompt_file_path = os.path.join(base_task_files_path, task_name, "base_prompt.txt")
+            if not os.path.exists(prompt_file_path):
+                print(f"Prompt file not found for {task_name} at {prompt_file_path}. Skipping task.")
+                continue
+            with open(prompt_file_path) as in_file:
+                prompt_template = in_file.read()
 
-    evaluate("abercrombie", generations, test_df["answer"].tolist())
+            # 3. Create full prompts (typically for the test set)
+            test_df = dataset_splits["test"].to_pandas()
+            prompts = generate_prompts(prompt_template=prompt_template, data_df=test_df)
+            print("First prompt:\n", prompts[0])
 
-    # Select tasks by licence
-    # target_license = "CC BY 4.0"
-    # tasks_with_target_license = []
-    # for task in tqdm(TASKS):
-    #     dataset = datasets.load_dataset("nguha/legalbench", task, split="train")
-    #     if dataset.info.license == target_license:
-    #         tasks_with_target_license.append(task)
-    # print("Tasks with target license:", tasks_with_target_license)
+            # 4. Get LLM Generations
+            # For now, using your random predictions example
+            # You need to know the possible output classes for each task if doing classification.
+            # The 'answer' column in test_df often contains the gold labels.
+            gold_answers = test_df["answer"].tolist()
+            unique_answers = list(set(gold_answers))  # Num classes if classification task
+
+            # This random generation is a placeholder!
+            # Replace with: generations = your_rag_model.predict(prompts, retrieved_contexts)
+            if not unique_answers:  # Handle case with no answers in test_df or empty test_df
+                print(f"No unique answers found for {task_name} to make predictions. Skipping evaluation.")
+                continue
+            generations = np.random.choice(unique_answers, len(test_df))
+
+            # 5. Evaluation
+            print(f"Evaluating predictions for {task_name}...")
+            evaluate(task_name, generations, gold_answers)
+
+        except Exception as e:
+            print(f"An error occurred while processing task {task_name}: {e}")
+            import traceback
+            traceback.print_exc()  # Print full traceback for debugging
+            continue
 
 
 if __name__ == "__main__":
-    main()
+    if not TASKS:
+        print("Error: The global TASKS list is empty. Please populate it with LegalBench task names.")
+    else:
+        main()
