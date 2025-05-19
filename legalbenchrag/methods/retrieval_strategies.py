@@ -1,13 +1,23 @@
 from typing import List, Union
 
-from legalbenchrag.methods.baseline import ChunkingStrategy, RetrievalStrategy as BaselineStrategy  # BaselineStrategy are the 4 original legalbench-rag strategies
-from legalbenchrag.utils.ai import AIEmbeddingModel, AIRerankModel
+from legalbenchrag.methods.baseline import ChunkingStrategy, RetrievalStrategy as BaselineStrategy
+from legalbenchrag.utils.ai import AIEmbeddingModel, AIRerankModel, AIModel
 from legalbenchrag.methods.hypa import HypaStrategy
+
+# --- Default Summarization Settings ---
+DEFAULT_SUMMARIZATION_MODEL = AIModel(company="openai", model="gpt-4o-mini")
+DEFAULT_SUMMARY_PROMPT_TEMPLATE = """System: You are an expert legal document summarizer.
+User: Summarize the following legal document text. Focus on extracting the most important entities, core purpose, and key legal topics. The summary must be concise, approximately {target_char_length} characters long, and optimized for providing context to smaller text chunks. Output only the summary text. Document:
+{document_content}"""
+DEFAULT_PROMPT_TARGET_CHAR_LENGTH = 150  # Target for LLM's generation
+DEFAULT_SUMMARY_TRUNCATION_LENGTH = 170  # Hard truncation limit after generation
 
 # Chunking Strategies (used by both Baseline and HyPA)
 chunk_strategies: List[ChunkingStrategy] = [
     ChunkingStrategy(strategy_name="rcts", chunk_size=500, chunk_overlap_ratio=0.0),
+    ChunkingStrategy(strategy_name="summary_rcts", chunk_size=500, chunk_overlap_ratio=0.0, summary_model=DEFAULT_SUMMARIZATION_MODEL, summary_prompt_template=DEFAULT_SUMMARY_PROMPT_TEMPLATE, prompt_target_char_length=DEFAULT_PROMPT_TARGET_CHAR_LENGTH, summary_truncation_length=DEFAULT_SUMMARY_TRUNCATION_LENGTH),
     # ChunkingStrategy(strategy_name="naive", chunk_size=500),
+    # ChunkingStrategy(strategy_name="summary_naive", chunk_size=500, summary_model=DEFAULT_SUMMARIZATION_MODEL, summary_prompt_template=DEFAULT_SUMMARY_PROMPT_TEMPLATE, prompt_target_char_length=DEFAULT_PROMPT_TARGET_CHAR_LENGTH, summary_truncation_length=DEFAULT_SUMMARY_TRUNCATION_LENGTH),
 ]
 
 # Embedding Models (used by both)
@@ -36,9 +46,9 @@ hf_rerank_bge_large = AIRerankModel(company="huggingface", model="BAAI/bge-reran
 
 
 rerank_models: list[AIRerankModel | None] = [
-    # None,
+    None,
     # cohere_rerank_model,
-    voyage_rerank_model,
+    # voyage_rerank_model,
     # hf_rerank_minilm,
     # hf_rerank_bge_base,
     # hf_rerank_bge_large,
@@ -94,6 +104,10 @@ for chunk_strategy in chunk_strategies:
                         chunk_strategy_name=chunk_strategy.strategy_name,
                         chunk_size=chunk_strategy.chunk_size,
                         chunk_overlap_ratio=chunk_strategy.chunk_overlap_ratio,
+                        summary_model=chunk_strategy.summary_model,
+                        summary_prompt_template=chunk_strategy.summary_prompt_template,
+                        prompt_target_char_length=chunk_strategy.prompt_target_char_length,
+                        summary_truncation_length=chunk_strategy.summary_truncation_length,
                         embedding_model=embed_model,
                         embedding_top_k=current_embedding_top_k,
                         bm25_top_k=current_bm25_top_k,
@@ -105,11 +119,10 @@ for chunk_strategy in chunk_strategies:
 
 
 # --- Combine all strategies to be tested ---
-# Use Union for type hinting the list
 ALL_RETRIEVAL_STRATEGIES: List[Union[BaselineStrategy, HypaStrategy]] = []
 ALL_RETRIEVAL_STRATEGIES.extend(BASELINE_STRATEGIES)
-ALL_RETRIEVAL_STRATEGIES.extend(HYPA_STRATEGIES)
+# ALL_RETRIEVAL_STRATEGIES.extend(HYPA_STRATEGIES)
 
 print(f"Defined {len(BASELINE_STRATEGIES)} Baseline strategies.")
-print(f"Defined {len(HYPA_STRATEGIES)} HyPA strategies.")
+# print(f"Defined {len(HYPA_STRATEGIES)} HyPA strategies.")
 print(f"Total strategies to run: {len(ALL_RETRIEVAL_STRATEGIES)}")

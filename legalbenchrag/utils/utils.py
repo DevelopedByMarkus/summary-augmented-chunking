@@ -24,6 +24,8 @@ ABBREVIATIONS = {
     "chunking": {
         "rcts": "rcts",
         "naive": "naive",
+        "summary_rcts": "s-rcts",
+        "summary_naive": "s-naive",
     },
     "method": {
         "baseline": "base",

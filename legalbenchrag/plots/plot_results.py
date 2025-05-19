@@ -8,37 +8,9 @@ from matplotlib.lines import Line2D
 import sys
 from collections import defaultdict
 
-# --- Constants ---
+from legalbenchrag.utils.utils import ABBREVIATIONS
 
-# Abbreviation dictionary provided by the user
-ABBREVIATIONS = {
-    "embedding": {
-        "text-embedding-3-large": "oai3L",
-        "BAAI/bge-base-en-v1.5": "bgeB",
-        "BAAI/bge-large-en-v1.5": "bgeL",
-        "thenlper/gte-large": "gteL",
-        "nlpaueb/legal-bert-base-uncased": "LbertB",
-        "nlpaueb/legal-bert-small-uncased": "LbertS",
-        "text-embedding-3-small": "oai3S",  # Added for completeness if needed
-        "text-embedding-ada-002": "oaiAda",  # Added for completeness if needed
-    },
-    "reranker": {
-        "rerank-english-v3.0": "coh",
-        "rerank-2-lite": "voy",  # Changed from 'voy' to 'voyage' for clarity maybe? Assuming 'voy' is intended.
-        "cross-encoder/ms-marco-MiniLM-L-6-v2": "miniLM",
-        "BAAI/bge-reranker-base": "bgeRB",  # Adjusted for consistency
-        "BAAI/bge-reranker-large": "bgeRL",  # Adjusted for consistency
-        "<None>": "X"  # Special key for handling None/NaN
-    },
-    "chunking": {
-        "rcts": "rcts",
-        "naive": "naive",
-    },
-    "method": {
-        "baseline": "base",
-        "hypa": "hypa",
-    }
-}
+# --- Constants ---
 
 IDENTIFYING_COLS = ['method', 'embedding_model_name', 'chunk_strategy_name', 'rerank_model_name']
 METRICS_TO_PLOT = {'precision': 'Precision', 'recall': 'Recall', 'f1_score': 'F1-Score'}
