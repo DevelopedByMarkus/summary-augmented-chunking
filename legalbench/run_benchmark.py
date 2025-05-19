@@ -2,6 +2,7 @@ from tqdm.auto import tqdm
 import datasets
 import numpy as np
 import os
+import argparse
 
 from tasks import TASKS
 from utils import generate_prompts
@@ -92,7 +93,7 @@ def get_selected_tasks(
     return final_selected_tasks
 
 
-def main():
+def main(args):
     # Supress progress bars for dataset loading if desired
     # datasets.utils.logging.set_verbosity_error()
 
@@ -100,10 +101,9 @@ def main():
 
     # Select the desired tasks
     tasks_to_run = get_selected_tasks(
-        # Apply the following if needed
-        # license_filter=XXX,
-        # include_tasks=XXX,
-        # ignore_tasks=XXX,
+        license_filter=args.license_filter,
+        include_tasks=args.include_tasks,
+        ignore_tasks=args.ignore_tasks,
     )
 
     if not tasks_to_run:
@@ -113,7 +113,7 @@ def main():
     base_task_files_path = "tasks"
 
     print(f"\n--- Running RAG pipeline for selected {len(tasks_to_run)} tasks ---")
-    for task_name in tasks_to_run:
+    for task_name in tqdm(tasks_to_run, desc="Evaluating tasks"):
         print(f"\nProcessing task: {task_name}")
         try:
             # 1. Download the dataset for the task
@@ -170,7 +170,33 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run RAG pipeline for selected LegalBench tasks.")
+    parser.add_argument(
+        "--license_filter",
+        "-l",
+        type=str,
+        default=None,
+        help="Filter tasks by a specific license string (e.g., 'CC BY 4.0')."
+    )
+    parser.add_argument(
+        "--include_tasks",
+        "-i",
+        type=str,
+        nargs='+',
+        default=None,
+        help="A list of task names to specifically include."
+    )
+    parser.add_argument(
+        "--ignore_tasks",
+        "-x",
+        type=str,
+        nargs='+',
+        default=None,
+        help="A list of task names to specifically exclude."
+    )
+    parsed_args = parser.parse_args()
+
     if not TASKS:
         print("Error: The global TASKS list is empty. Please populate it with LegalBench task names.")
     else:
-        main()
+        main(parsed_args)
