@@ -105,7 +105,6 @@ async def main() -> None:
     print(f"Total tests selected across all benchmarks: {len(benchmark.tests)}")
 
     # --- Create Corpus ---
-    # --- START MODIFIED SECTION ---
     corpus_docs_to_load = used_document_file_paths_set if SORT_BY_DOCUMENT else document_file_paths_set
     corpus: list[Document] = []
     loaded_corpus_paths = set()  # Stores the ORIGINAL file paths that were successfully loaded
@@ -139,9 +138,9 @@ async def main() -> None:
                     print(
                         f"Warning: Corpus file '{path_to_read}' (for original '{document_file_path}') is empty. Skipping.")
                     continue
-                # IMPORTANT: Store the Document with the ORIGINAL file path from the benchmark data
+                # Store the Document with the ORIGINAL file path from the benchmark data
                 corpus.append(Document(file_path=document_file_path, content=content))
-                # IMPORTANT: Add the ORIGINAL file path to the set of loaded paths
+                # Add the ORIGINAL file path to the set of loaded paths
                 loaded_corpus_paths.add(document_file_path)
         except Exception as e:
             print(f"Error reading corpus file {path_to_read} (intended for '{document_file_path}'): {e}")
