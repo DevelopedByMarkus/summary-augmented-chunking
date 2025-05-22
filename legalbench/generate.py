@@ -1,11 +1,18 @@
 from abc import ABC, abstractmethod
 import asyncio
 import os
+import torch
+from tqdm.auto import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from openai import AsyncOpenAI, APIError
 
 
 class BaseGenerator(ABC):
     def __init__(self, model_name: str, **kwargs):
         self.model_name = model_name
+        # kwargs might include temperature, max_new_tokens if common to all
+        self.temperature = kwargs.get("temperature", 0.7)
+        self.max_new_tokens = kwargs.get("max_new_tokens", 256)
 
     @abstractmethod
     async def generate(self, prompts: list[str], **generation_kwargs) -> list[str]:
@@ -20,59 +27,164 @@ class LocalGenerator(BaseGenerator, ABC):
 
 
 class APIGenerator(BaseGenerator, ABC):
-    def __init__(self, model_name: str, api_key: str, **kwargs):
+    def __init__(self, model_name: str, **kwargs):
         super().__init__(model_name, **kwargs)
-        self.api_key = api_key
+        DEFAULT_CONCURRENCY_LIMIT = 10
+        self.concurrency_limit = DEFAULT_CONCURRENCY_LIMIT
 
 
 class OpenAIGenerator(APIGenerator):
     def __init__(self, model_name: str, api_key: str, **kwargs):
         super().__init__(model_name, **kwargs)
-        self.api_key = api_key
-        from openai import AsyncOpenAI
-        self.client = AsyncOpenAI(api_key=self.api_key)
-        print(f"Initialized OpenAIGenerator for model: {self.model_name}")
+        self.client = AsyncOpenAI(api_key=api_key)
 
-    async def generate(self, prompts: list[str], temperature: float = 0.7, max_new_tokens: int = 256, **kwargs) -> list[
-        str]:
-        print(f"OpenAI generating {len(prompts)} prompts (placeholder)...")
-        # Actual implementation:
-        # - Use asyncio.Semaphore for concurrency control
-        # - Loop through prompts, create tasks for self.client.chat.completions.create(...)
-        # - Use asyncio.gather to run tasks concurrently
-        # - Handle responses and errors
-        # For placeholder:
-        await asyncio.sleep(0.1)  # Simulate async work
-        return [f"OpenAI response for: {p[:30]}..." for p in prompts]
+    async def _get_completion(self, prompt: str, semaphore: asyncio.Semaphore, temperature: float,
+                              max_new_tokens: int) -> str | None:
+        async with semaphore:
+            try:
+                chat_completion = await self.client.chat.completions.create(
+                    messages=[
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=self.model_name,
+                    temperature=temperature,
+                    max_tokens=max_new_tokens,
+                )
+                response_content = chat_completion.choices[0].message.content
+                return response_content.strip() if response_content else None
+            except APIError as e:
+                # TODO: Use index and task name in the error print
+                print(f"OpenAI API Error for prompt '{prompt[:50]}...': {e}")
+                return f"ERROR: OpenAI API Error - {e}"
+            except Exception as e:
+                # TODO: Use index and task name in the error print
+                print(f"An unexpected error occurred with OpenAI for prompt '{prompt[:50]}...': {e}")
+                return f"ERROR: Unexpected error - {e}"
+
+    async def generate(self, prompts: list[str], **generation_kwargs) -> list[str]:
+        temperature = generation_kwargs.get("temperature", self.temperature)
+        max_new_tokens = generation_kwargs.get("max_new_tokens", self.max_new_tokens)
+        semaphore = asyncio.Semaphore(self.concurrency_limit)
+        tasks = []
+        for prompt_text in prompts:
+            if not prompt_text or not isinstance(prompt_text, str):
+                print(f"Warning: Invalid or empty prompt skipped: {prompt_text}")
+                tasks.append(
+                    asyncio.create_task(asyncio.sleep(0, result="ERROR: Invalid prompt")))  # Ensure future has a result
+                continue
+            tasks.append(self._get_completion(prompt_text, semaphore, temperature, max_new_tokens))
+
+        results = await asyncio.gather(*tasks, return_exceptions=False)  # Exceptions handled in _get_completion
+
+        # Ensure all results are strings, even if None was returned or an error string.
+        # The calling code expects a list of strings of the same length as prompts.
+        final_results = []
+        for i, res in enumerate(results):
+            if res is None:
+                final_results.append(f"ERROR: No response for prompt {i}")
+            else:
+                final_results.append(res)
+        return final_results
 
 
 class LlamaLocalGenerator(LocalGenerator):
-    def __init__(self, model_name: str, device: str, **kwargs):
-        super().__init__(model_name, **kwargs)
-        self.device = device
-        # Initialize Hugging Face model and tokenizer here
-        # from transformers import AutoModelForCausalLM, AutoTokenizer
-        # self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        # self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype=torch.float16).to(self.device)
-        # if self.tokenizer.pad_token is None:
-        #     self.tokenizer.pad_token = self.tokenizer.eos_token
-        print(f"Initialized LlamaLocalGenerator for model: {self.model_name} on device: {self.device}")
+    def __init__(self, model_name: str, batch_size: int, device: str, **kwargs):
+        super().__init__(model_name, batch_size=batch_size, device=device, **kwargs)
+        try:
+            # Determine torch_dtype based on device capability
+            if self.device == "cuda" and torch.cuda.is_available():
+                dtype = torch.float16
+            elif self.device == "mps" and torch.backends.mps.is_available():
+                dtype = torch.float16
+            else:
+                dtype = torch.float32  # Default for CPU
 
-    async def generate(self, prompts: list[str], batch_size: int = 8, temperature: float = 0.7,
-                       max_new_tokens: int = 256, **kwargs) -> list[str]:
-        print(f"Llama generating {len(prompts)} prompts with batch_size {batch_size} (placeholder)...")
-        # Actual implementation:
-        # - Loop through prompts in batches
-        # - Tokenize batch: self.tokenizer(batch_prompts, ..., return_tensors="pt").to(self.device)
-        # - Generate: with torch.no_grad(): self.model.generate(...)
-        # - Decode: self.tokenizer.batch_decode(...)
-        # - This method is async to match BaseGenerator, but internal logic is synchronous.
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                torch_dtype=dtype,
+                # device_map="auto" can be useful for multi-GPU or very large models.
+                # For single explicit device, to(self.device) is more direct.
+                trust_remote_code=True
+            ).to(self.device)
+
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+                self.model.config.pad_token_id = self.model.config.eos_token_id  # Also update model config
+
+            self.model.eval()  # Set model to evaluation mode
+        except Exception as e:
+            print(f"Error initializing LlamaLocalGenerator for {model_name}: {e}")
+            raise  # Re-raise exception to signal failure to initialize
+
+    async def generate(self, prompts: list[str], **generation_kwargs) -> list[str]:
+        temperature = generation_kwargs.get("temperature", self.temperature)
+        max_new_tokens = generation_kwargs.get("max_new_tokens", self.max_new_tokens)
+
+        print(
+            f"Llama generating {len(prompts)} prompts for model {self.model_name} with batch_size {self.batch_size}...")
         all_generations = []
-        for i in range(0, len(prompts), batch_size):
-            batch_prompts = prompts[i:i + batch_size]
-            # Simulate processing
-            await asyncio.sleep(0.05 * len(batch_prompts))  # Simulate async work (though actual work is sync)
-            all_generations.extend([f"Llama response for: {p[:30]}..." for p in batch_prompts])
+
+        # This method is async to match BaseGenerator, but internal HF logic is synchronous.
+        # No actual `await` on I/O or true async operations here, but the signature matches.
+        # If this were part of a larger asyncio application, long-running sync code should
+        # ideally be run in a thread pool executor to avoid blocking the event loop.
+        for i in tqdm(range(0, len(prompts), self.batch_size), desc=f"Generating {self.model_name}"):
+            batch_prompts = prompts[i:i + self.batch_size]
+
+            inputs = self.tokenizer(
+                batch_prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=2048  # Adjust as needed, consider model's max context
+            ).to(self.device)
+
+            # Store length of input_ids to slice off the prompt from the generated output
+            input_ids_lengths = [len(ids) for ids in inputs.input_ids]
+
+            try:
+                with torch.no_grad():
+                    # Ensure do_sample is True if temperature is not 1.0 or top_p/top_k are used
+                    do_sample = True if temperature < 1.0 or temperature > 1.0 else False
+
+                    generated_ids = self.model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        do_sample=do_sample,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        # top_p=0.9, # Example: add other generation params if needed
+                    )
+            except Exception as e:
+                print(f"Error during model.generate for a batch: {e}")
+                # Add error placeholders for this batch
+                all_generations.extend([f"ERROR: Generation failed - {e}" for _ in batch_prompts])
+                continue
+
+            # Decode and slice off the prompt part
+            # generated_ids shape: (batch_size, sequence_length)
+            batch_results = []
+            for j, output_ids in enumerate(generated_ids):
+                # The generated sequence includes the input prompt.
+                # We need to decode only the newly generated tokens.
+                prompt_length = input_ids_lengths[j]
+                # Check if generated sequence is longer than prompt (i.e., something was generated)
+                if len(output_ids) > prompt_length:
+                    newly_generated_ids = output_ids[prompt_length:]
+                    decoded_text = self.tokenizer.decode(newly_generated_ids, skip_special_tokens=True)
+                    batch_results.append(decoded_text.strip())
+                else:
+                    # Nothing new was generated, or generation was shorter than expected (e.g., only EOS)
+                    batch_results.append("")  # Or some indicator of no new generation
+
+            all_generations.extend(batch_results)
+
+            # Clean up GPU memory for large models if processing many batches, though PyTorch usually handles it.
+            # del inputs, generated_ids
+            # if self.device == "cuda":
+            #     torch.cuda.empty_cache()
+
         return all_generations
 
 
@@ -82,17 +194,23 @@ def create_generator(args) -> BaseGenerator:
         "temperature": args.temperature,
         "max_new_tokens": args.max_new_tokens,
     }
-    if "gpt" in args.model_name.lower():
+    model_name_lower = args.model_name.lower()
+    if "gpt-" in model_name_lower or "openai/" in model_name_lower:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OpenAI API key must be provided via OPENAI_API_KEY environment variable for GPT models.")
         return OpenAIGenerator(model_name=args.model_name, api_key=api_key, **common_kwargs)
-    elif "llama" in args.model_name.lower():
-        return LlamaLocalGenerator(model_name=args.model_name, batch_size=args.batch_size, device=args.device, **common_kwargs)
+
+    elif "llama" in model_name_lower:
+        return LlamaLocalGenerator(
+            model_name=args.model_name,
+            batch_size=args.batch_size,
+            device=args.device,
+            **common_kwargs
+        )
     else:
-        # Fallback or error for unsupported models
-        # For now, let's try a generic local model load attempt if not OpenAI
-        print(
-            f"Warning: Model '{args.model_name}' not explicitly handled. Attempting generic local load (Llama-like structure).")
-        print(f"Ensure '{args.model_name}' is a valid Hugging Face model path for causal LM.")
-        return LlamaLocalGenerator(model_name=args.model_name, device=args.device, **common_kwargs)
+        raise ValueError(
+            f"Unsupported model_name or unable to determine model type: {args.model_name}. "
+            "Please use a full Hugging Face path (e.g., 'meta-llama/Llama-2-7b-chat-hf') for local models, "
+            "or ensure it's a recognized OpenAI model name (e.g., 'gpt-4o')."
+        )

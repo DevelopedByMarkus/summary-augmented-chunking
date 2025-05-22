@@ -245,3 +245,4 @@ nltk~=3.9.1
 datasets~=3.6.0
 torch~=2.6.0
 typing_extensions~=4.13.2
+transformers~=4.48.3
