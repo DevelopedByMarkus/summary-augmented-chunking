@@ -162,6 +162,7 @@ def main(args):
             task_eval_results = evaluate(task_name, generations, gold_answers)
             print(f"Results for {task_name}: {task_eval_results}")
             all_tasks_results[task_name] = task_eval_results
+            # TODO: Store retrieved snippets and answer in the resulting tsv file.
 
         except Exception as e:
             print(f"An error occurred while processing task {task_name}: {e}")
@@ -186,11 +187,11 @@ if __name__ == "__main__":
                         help="List of task names to exclude.")
 
     # Model and Generation arguments
-    parser.add_argument("--model_name", type=str, required=True,
+    parser.add_argument("--model_name", "-m", type=str, required=True,
                         help="Name/path of the model (e.g., 'gpt-4o', 'meta-llama/Llama-2-7b-chat-hf').")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device for local models (e.g., 'cuda', 'cpu', 'mps').")
-    parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature for generation.")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature for generation.")
     parser.add_argument("--max_new_tokens", type=int, default=256, help="Maximum new tokens to generate.")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for local model inference.")
 

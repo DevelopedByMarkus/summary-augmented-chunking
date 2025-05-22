@@ -5,6 +5,7 @@ import torch
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from openai import AsyncOpenAI, APIError
+from legalbenchrag.utils.credentials import credentials
 
 
 class BaseGenerator(ABC):
@@ -196,6 +197,9 @@ def create_generator(args) -> BaseGenerator:
     }
     model_name_lower = args.model_name.lower()
     if "gpt-" in model_name_lower or "openai/" in model_name_lower:
+        # Set API keys from credentials
+        os.environ["OPENAI_API_KEY"] = credentials.ai.openai_api_key.get_secret_value()
+        # TODO: Refactor credentials in a project credentials dir
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OpenAI API key must be provided via OPENAI_API_KEY environment variable for GPT models.")
