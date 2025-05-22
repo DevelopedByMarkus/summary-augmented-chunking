@@ -4,6 +4,7 @@ import os
 import argparse
 import torch
 import asyncio
+import csv
 
 from legalbench.tasks import TASKS
 from legalbench.utils import generate_prompts
@@ -73,6 +74,35 @@ def get_selected_tasks(
     return final_selected_tasks
 
 
+def write_verbose_output(output_dir, task_name, prompts, generations, gold_answers, model_name):
+    """Writes detailed output to a CSV file for a given task."""
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Sanitize task_name for filename if it contains characters not suitable for filenames
+    safe_task_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in task_name)
+    # Sanitize model_name for filename
+    safe_model_name = model_name.replace("/", "_").replace("\\", "_")  # Replace slashes
+    safe_model_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in safe_model_name)
+
+    filename = os.path.join(output_dir, f"{safe_task_name}_{safe_model_name}_verbose.csv")
+
+    print(f"Writing verbose output to: {filename}")
+
+    with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['index', 'prompt', 'generated_output', 'gold_answer']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for i in range(len(prompts)):
+            writer.writerow({
+                'index': i,
+                'prompt': prompts[i],
+                'generated_output': generations[i] if i < len(generations) else "N/A (generation missing)",
+                'gold_answer': gold_answers[i] if i < len(gold_answers) else "N/A (gold_answer missing)"
+            })
+
+
 def main(args):
     datasets.utils.logging.set_verbosity_error()
     print("All available tasks (count):", len(TASKS))
@@ -99,9 +129,10 @@ def main(args):
         traceback.print_exc()
         return
 
-    base_task_files_path = "legalbench/tasks"  # Ensure this path is correct relative to script execution
+    base_task_files_path = "legalbench/tasks"
+    verbose_output_dir = "legalbench/output"
 
-    all_tasks_results = {}  # To store evaluation results for all tasks
+    all_tasks_results = {}
 
     print(f"\n--- Running and Evaluating Model: {args.model_name} ---")
     for idx, task_name in enumerate(tasks_to_run, start=1):
@@ -132,10 +163,12 @@ def main(args):
             # For now, assuming generate_prompts takes care of incorporating retrieved contexts.
             # You will need to integrate your RAG retrieval logic here or within generate_prompts.
             test_df = dataset_splits["test"].to_pandas()
-            # Example: For RAG, you would first retrieve contexts for each item in test_df
-            # retrieved_contexts_for_task = [retrieve_context(row['query']) for _, row in test_df.iterrows()]
-            # prompts = generate_prompts_with_rag(prompt_template, test_df, retrieved_contexts_for_task)
-            prompts = generate_prompts(prompt_template=prompt_template, data_df=test_df)
+            # Here, you would integrate your RAG retrieval logic.
+            # For example, `retrieved_contexts` would be a list of contexts, one for each row in test_df.
+            # This `retrieved_contexts` list would then be passed to `generate_prompts`.
+            # retrieved_contexts_for_task = [your_rag_retriever.retrieve(row['query_column']) for _, row in test_df.iterrows()]
+            # prompts = generate_prompts(prompt_template=prompt_template, data_df=test_df, contexts=retrieved_contexts_for_task)
+            prompts = generate_prompts(prompt_template=prompt_template, data_df=test_df)  # Current call
 
             if not prompts or all(p is None for p in prompts):
                 print(f"No valid prompts generated for {task_name}. Skipping generation.")
@@ -147,8 +180,6 @@ def main(args):
             generation_kwargs = {
                 "temperature": args.temperature,
                 "max_new_tokens": args.max_new_tokens,
-                "batch_size": args.batch_size,
-                "device": args.device,
             }
             generations = asyncio.run(generator.generate(prompts, **generation_kwargs))
 
@@ -158,11 +189,12 @@ def main(args):
 
             # 5. Evaluation
             gold_answers = test_df["answer"].tolist()
+            if args.verbose:
+                write_verbose_output(verbose_output_dir, task_name, prompts, generations, gold_answers, args.model_name)
             print(f"Evaluating predictions for {task_name}... ({len(gold_answers)} tests)")
             task_eval_results = evaluate(task_name, generations, gold_answers)
             print(f"Results for {task_name}: {task_eval_results}")
             all_tasks_results[task_name] = task_eval_results
-            # TODO: Store retrieved snippets and answer in the resulting tsv file.
 
         except Exception as e:
             print(f"An error occurred while processing task {task_name}: {e}")
@@ -191,9 +223,14 @@ if __name__ == "__main__":
                         help="Name/path of the model (e.g., 'gpt-4o', 'meta-llama/Llama-2-7b-chat-hf').")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device for local models (e.g., 'cuda', 'cpu', 'mps').")
-    parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature for generation.")
+    parser.add_argument("--temperature", type=float, default=1.0,
+                        help="Sampling temperature for generation.")  # Default 1.0 is often deterministic for greedy. 0.7 for more diverse.
     parser.add_argument("--max_new_tokens", type=int, default=256, help="Maximum new tokens to generate.")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for local model inference.")
+
+    # Other arguments
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Write detailed output (index, prompt, generation, gold_answer) to a CSV file for each task.")
 
     parsed_args = parser.parse_args()
 
