@@ -5,6 +5,8 @@ import argparse
 import torch
 import asyncio
 import csv
+import datetime  # For timestamp in results filename (optional, but good practice)
+import re
 
 from legalbench.tasks import TASKS
 from legalbench.utils import generate_prompts
@@ -12,6 +14,8 @@ from legalbench.evaluation import evaluate
 from legalbench.generate import create_generator
 
 _license_cache = {}
+# BASE_PROMPT = "base_prompt.txt"
+BASE_PROMPT = "claude_prompt.txt"  # refined prompt
 
 
 def get_task_license(task_name, repo_id="nguha/legalbench"):
@@ -103,6 +107,72 @@ def write_verbose_output(output_dir, task_name, prompts, generations, gold_answe
             })
 
 
+def write_summary_results(results_dir, model_name, retrieval_strategy, all_task_results, args_params):
+    """Writes summary results and parameters for all tasks to a single CSV file."""
+    os.makedirs(results_dir, exist_ok=True)
+
+    # Sanitize model_name for filename
+    safe_model_name = re.sub(r'[\\/*?:"<>|]', "_", model_name)  # More robust sanitization
+    safe_model_name = safe_model_name.replace("/", "_")  # Replace slashes specifically if re didn't catch all
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(results_dir, f"{safe_model_name}_{retrieval_strategy}_{timestamp}.csv")
+
+    print(f"Writing summary results to: {filename}")
+
+    # Define fieldnames - include common parameters and then flexible result fields
+    # The `evaluate` function returns a dictionary, so we'll dynamically get keys from the first valid result.
+    base_fieldnames = ['index', 'task_name', 'model_name', 'retrieval_strategy',
+                       'temperature', 'max_new_tokens', 'batch_size', 'device']
+
+    # Determine result keys from the first successful task evaluation
+    result_keys = []
+    for task_result in all_task_results.values():
+        if isinstance(task_result, dict) and "error" not in task_result:
+            result_keys = list(task_result.keys())
+            break
+
+    fieldnames = base_fieldnames + result_keys
+    if not result_keys:  # If all tasks errored or no results, add a generic 'result' field
+        if 'result' not in fieldnames:  # ensure it's not already there
+            fieldnames.append('result_or_error')
+
+    with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')  # extrasaction='ignore' is safer
+        writer.writeheader()
+
+        for i, (task_name, task_result) in enumerate(all_task_results.items()):
+            row_data = {
+                'index': i,
+                'task_name': task_name,
+                'model_name': args_params.model_name,
+                'retrieval_strategy': retrieval_strategy,
+                'temperature': args_params.temperature,
+                'max_new_tokens': args_params.max_new_tokens,
+                'batch_size': args_params.batch_size,
+                'device': args_params.device,
+            }
+            if isinstance(task_result, dict):
+                if "error" in task_result:
+                    # If only 'result_or_error' is a field, put error there. Otherwise, it will be ignored by DictWriter.
+                    if 'result_or_error' in fieldnames:
+                        row_data['result_or_error'] = f"ERROR: {task_result['error']}"
+                    else:  # If specific result keys exist, the error won't have a column, print it
+                        print(
+                            f"Note: Task '{task_name}' had an error: {task_result['error']}. Error not written to dedicated CSV column unless 'result_or_error' is present.")
+                        # To ensure something is written even if result_keys are from successful tasks
+                        # one could add a generic 'status' column. For now, this will be an empty row for result keys.
+                else:
+                    row_data.update(task_result)  # Add the specific metric scores
+            else:  # Should not happen if evaluate returns dict or we store error dict
+                if 'result_or_error' in fieldnames:
+                    row_data['result_or_error'] = str(task_result)
+                else:
+                    print(f"Note: Task '{task_name}' had an unexpected result format: {task_result}")
+
+            writer.writerow(row_data)
+
+
 def main(args):
     datasets.utils.logging.set_verbosity_error()
     print("All available tasks (count):", len(TASKS))
@@ -131,8 +201,12 @@ def main(args):
 
     base_task_files_path = "legalbench/tasks"
     verbose_output_dir = "legalbench/output"
+    summary_results_dir = "legalbench/results"  # Define summary results directory
 
-    all_tasks_results = {}
+    # Determine retrieval strategy (placeholder for now)
+    retrieval_strategy = args.retrieval_strategy if hasattr(args, 'retrieval_strategy') else "X"
+
+    all_tasks_results_summary = {}  # To store evaluation results for summary CSV
 
     print(f"\n--- Running and Evaluating Model: {args.model_name} ---")
     for idx, task_name in enumerate(tasks_to_run, start=1):
@@ -145,6 +219,7 @@ def main(args):
                                                                trust_remote_code=True)
             except Exception as e:
                 print(f"Could not load 'test' split for {task_name}: {e}. Skipping task.")
+                all_tasks_results_summary[task_name] = {"error": f"Dataset load failed - {e}"}
                 continue
             # try:
             #     dataset_splits["train"] = datasets.load_dataset("nguha/legalbench", task_name, split="train", trust_remote_code=True)
@@ -152,9 +227,10 @@ def main(args):
             #     print(f"Could not load 'train' split for {task_name}: {e}. Proceeding without train split.")
 
             # 2. Load base prompt
-            prompt_file_path = os.path.join(base_task_files_path, task_name, "base_prompt.txt")
+            prompt_file_path = os.path.join(base_task_files_path, task_name, BASE_PROMPT)
             if not os.path.exists(prompt_file_path):
                 print(f"Prompt file not found for {task_name} at {prompt_file_path}. Skipping task.")
+                all_tasks_results_summary[task_name] = {"error": "Prompt file not found"}
                 continue
             with open(prompt_file_path, encoding='utf-8') as in_file:
                 prompt_template = in_file.read()
@@ -163,20 +239,17 @@ def main(args):
             # For now, assuming generate_prompts takes care of incorporating retrieved contexts.
             # You will need to integrate your RAG retrieval logic here or within generate_prompts.
             test_df = dataset_splits["test"].to_pandas()
-            # Here, you would integrate your RAG retrieval logic.
-            # For example, `retrieved_contexts` would be a list of contexts, one for each row in test_df.
-            # This `retrieved_contexts` list would then be passed to `generate_prompts`.
-            # retrieved_contexts_for_task = [your_rag_retriever.retrieve(row['query_column']) for _, row in test_df.iterrows()]
-            # prompts = generate_prompts(prompt_template=prompt_template, data_df=test_df, contexts=retrieved_contexts_for_task)
-            prompts = generate_prompts(prompt_template=prompt_template, data_df=test_df)  # Current call
+            # Your RAG integration for prompts would go here
+            # prompts = generate_prompts_with_rag(prompt_template, test_df, retrieved_contexts)
+            prompts = generate_prompts(prompt_template=prompt_template, data_df=test_df)
 
             if not prompts or all(p is None for p in prompts):
                 print(f"No valid prompts generated for {task_name}. Skipping generation.")
+                all_tasks_results_summary[task_name] = {"error": "No valid prompts generated"}
                 continue
 
             # 4. Get LLM Generations
             print(f"Generating {len(prompts)} responses for '{task_name}' using '{args.model_name}'...")
-
             generation_kwargs = {
                 "temperature": args.temperature,
                 "max_new_tokens": args.max_new_tokens,
@@ -185,6 +258,7 @@ def main(args):
 
             if len(generations) != len(prompts):
                 print(f"Warning: Number of generations ({len(generations)}) does not match number of prompts ({len(prompts)}). Skipping evaluation for this task.")
+                all_tasks_results_summary[task_name] = {"error": "Mismatch in generations and prompts length"}
                 continue
 
             # 5. Evaluation
@@ -194,18 +268,20 @@ def main(args):
             print(f"Evaluating predictions for {task_name}... ({len(gold_answers)} tests)")
             task_eval_results = evaluate(task_name, generations, gold_answers)
             print(f"Results for {task_name}: {task_eval_results}")
-            all_tasks_results[task_name] = task_eval_results
+            all_tasks_results_summary[task_name] = task_eval_results
 
         except Exception as e:
             print(f"An error occurred while processing task {task_name}: {e}")
             import traceback
             traceback.print_exc()
             print(f"Skipping task {task_name}")
-            all_tasks_results[task_name] = {"error": str(e)}
+            all_tasks_results_summary[task_name] = {"error": str(e)}
             continue
 
+    write_summary_results(summary_results_dir, args.model_name, retrieval_strategy, all_tasks_results_summary, args)
+
     print("\n--- Overall Benchmark Summary ---")
-    for task_name, results in all_tasks_results.items():
+    for task_name, results in all_tasks_results_summary.items():
         print(f"Task: {task_name}, Results: {results}")
 
 
@@ -228,7 +304,11 @@ if __name__ == "__main__":
     parser.add_argument("--max_new_tokens", type=int, default=256, help="Maximum new tokens to generate.")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for local model inference.")
 
-    # Other arguments
+    # Retrieval strategy arguments
+    parser.add_argument("--retrieval_strategy", type=str, default="X",
+                        help="Name of the retrieval strategy used (default: X for none/baseline).")
+
+    # Other argument
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Write detailed output (index, prompt, generation, gold_answer) to a CSV file for each task.")
 
