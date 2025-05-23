@@ -6,13 +6,17 @@ import torch
 import asyncio
 
 from legalbench.tasks import TASKS
-from legalbench.utils import generate_prompts, write_summary_results, write_verbose_output
+# Assuming generate_prompts is no longer needed if generate_prompts_with_rag_context is used directly
+# from legalbench.utils import generate_prompts
+from legalbench.utils import write_summary_results, write_verbose_output
 from legalbench.evaluation import evaluate
-from legalbench.generate import create_generator
+from legalbench.generate import create_generator  # LLM Generator factory
+from legalbench.retrieval import create_retriever, load_corpus_for_dataset, \
+    generate_prompts_with_rag_context  # RAG components
+from legalbenchrag.benchmark_types import Document as LegalBenchRAGDocument  # For type hinting corpus
 
 _license_cache = {}
-# BASE_PROMPT = "base_prompt.txt"
-BASE_PROMPT = "claude_prompt.txt"  # refined prompt
+BASE_PROMPT_FILENAME = "claude_prompt.txt"  # refined prompt, or could be "base_prompt.txt"
 
 
 def get_task_license(task_name, repo_id="nguha/legalbench"):
@@ -64,7 +68,6 @@ def get_selected_tasks(
                         f"Warning: Task '{task_name}' is in both 'include_tasks' and 'ignore_tasks'. Prioritizing 'include_tasks' - task will be USED.")
                     final_selected_tasks.append(task_name)
                 else:
-                    # print(f"Ignoring task: {task_name}") # Can be verbose
                     continue
             else:
                 final_selected_tasks.append(task_name)
@@ -89,130 +92,321 @@ def main(args):
         print("\nNo tasks selected to run. Exiting.")
         return
 
-    # Instantiate the generator once
     try:
-        generator = create_generator(args)
+        llm_generator = create_generator(args)  # LLM Generator
+        retriever = None  # Initialize retriever
+        if args.retrieval_strategy != "X":  # "X" means no retrieval
+            retriever = create_retriever(args.retrieval_strategy)
+            # Set API keys for retrieval components if they need them, e.g. for summarization model in chunking
+            # This assumes legalbenchrag.utils.ai.get_ai_connection or similar is used by retrieval methods
+            if "OPENAI_API_KEY" not in os.environ and hasattr(args, 'openai_api_key') and args.openai_api_key:
+                os.environ["OPENAI_API_KEY"] = args.openai_api_key
+            # Add other API keys (Cohere, Voyage) if your chosen retrieval strategies use them directly
+            # and are not picked up from legalbenchrag.utils.credentials
+            # For now, assuming legalbenchrag internal credential handling or env vars set by its main() are sufficient if called as library
+            # For summarization within chunking, OpenAI key might be needed by ai_call
+            if args.retrieval_strategy.startswith("s-") and "OPENAI_API_KEY" not in os.environ:
+                print(
+                    "Warning: A summary-based retrieval strategy is selected, but OPENAI_API_KEY is not set in environment. Summarization might fail if it uses OpenAI.")
+
     except ValueError as e:
-        print(f"Error creating generator: {e}")
+        print(f"Error creating generator or retriever: {e}")
         return
     except Exception as e:
-        print(f"Unexpected error creating generator for model '{args.model_name}': {e}")
+        print(f"Unexpected error creating generator/retriever: {e}")
         import traceback
         traceback.print_exc()
         return
 
     base_task_files_path = "legalbench/tasks"
     verbose_output_dir = "legalbench/output"
-    summary_results_dir = "legalbench/results"  # Define summary results directory
+    summary_results_dir = "legalbench/results"
 
-    # Determine retrieval strategy (placeholder for now)
-    retrieval_strategy = args.retrieval_strategy if hasattr(args, 'retrieval_strategy') else "X"
+    retrieval_strategy_name_for_logging = args.retrieval_strategy
 
-    all_tasks_results_summary = {}  # To store evaluation results for summary CSV
+    all_tasks_results_summary = {}
+    retrievers_cache = {}  # Cache for initialized retrievers per top-level dataset_id
+    corpus_cache = {}  # Cache for loaded corpus docs per top-level dataset_id
 
-    print(f"\n--- Running and Evaluating Model: {args.model_name} ---")
-    for idx, task_name in enumerate(tasks_to_run, start=1):
-        print(f"\nProcessing task ({idx}/{len(tasks_to_run)}): '{task_name}'")
-        try:
-            # 1. Download the dataset for the task
-            dataset_splits = {}
+    print(
+        f"\n--- Running and Evaluating Model: {args.model_name} with Retrieval: {retrieval_strategy_name_for_logging} ---")
+
+    # Determine loop for final_top_k
+    k_values_to_run = args.final_top_k
+    if not isinstance(k_values_to_run, list):  # If single int was passed
+        k_values_to_run = [k_values_to_run]
+
+    for current_final_top_k in k_values_to_run:
+        print(f"\n===== Running with final_top_k = {current_final_top_k} =====")
+        # Modify args for this iteration of k for logging purposes
+        current_run_args = argparse.Namespace(**vars(args))
+        current_run_args.final_top_k = current_final_top_k
+
+        # Reset summary for this k value if you want separate summary files per k
+        # Or append k to the filename. For now, one summary file overwrites per retrieval_strategy/model.
+        # Let's collect all results and then write one summary file.
+        # The summary file writer will use current_run_args.final_top_k for the column value.
+
+        for idx, task_name in enumerate(tasks_to_run, start=1):
+            # Unique key for results if running multiple k values, to avoid overwriting in all_tasks_results_summary
+            task_result_key = f"{task_name}_k{current_final_top_k}"
+            print(f"\n--- Processing task ({idx}/{len(tasks_to_run)}): '{task_name}' for k={current_final_top_k}")
+
             try:
-                dataset_splits["test"] = datasets.load_dataset("nguha/legalbench", task_name, split="test",
-                                                               trust_remote_code=True)
+                dataset_splits = {}
+                try:
+                    dataset_splits["test"] = datasets.load_dataset("nguha/legalbench", task_name, split="test",
+                                                                   trust_remote_code=True)
+                except Exception as e:
+                    print(f"Could not load 'test' split for {task_name}: {e}. Skipping task.")
+                    all_tasks_results_summary[task_result_key] = {"error": f"Dataset load failed - {e}"}
+                    continue
+
+                prompt_file_path = os.path.join(base_task_files_path, task_name, BASE_PROMPT_FILENAME)
+                if not os.path.exists(prompt_file_path):
+                    print(f"Prompt file not found for {task_name} at {prompt_file_path}. Skipping task.")
+                    all_tasks_results_summary[task_result_key] = {"error": "Prompt file not found"}
+                    continue
+                with open(prompt_file_path, encoding='utf-8') as in_file:
+                    base_prompt_text_template = in_file.read()
+
+                test_df = dataset_splits["test"].to_pandas()
+
+                # Prepare lists for verbose output
+                original_indices_for_verbose = []
+                original_queries_for_verbose = []
+                final_prompts_for_llm_verbose = []
+                query_responses_for_verbose = []  # To store QueryResponse objects
+
+                current_task_prompts_to_llm = []  # Prompts after RAG, for this task
+
+                # Determine top-level dataset_id (e.g., "cuad" from "cuad_...")
+                if task_name.startswith("cuad"):
+                    dataset_id = "cuad"
+                elif task_name.startswith("maud"):
+                    dataset_id = "maud"
+                elif task_name.startswith("contract_nli"):
+                    dataset_id = "contractnli"
+                elif task_name.startswith("privacy_policy_qa"):
+                    dataset_id = "privacy_qa"
+                else:
+                    dataset_id = ""  # handled in load_corpus_for_dataset()
+                # dataset_id = "cuad_test"  # TODO: Just for debugging
+
+                # --- Retrieval Step ---
+                if retriever:  # Only if a retrieval strategy is chosen
+                    if dataset_id not in retrievers_cache:
+                        print(f"Initializing retriever and corpus for dataset: {dataset_id}")
+                        if dataset_id not in corpus_cache:
+                            corpus_docs: list[LegalBenchRAGDocument] = load_corpus_for_dataset(dataset_id)
+                            corpus_cache[dataset_id] = corpus_docs
+                        else:
+                            corpus_docs = corpus_cache[dataset_id]
+
+                        if not corpus_docs:
+                            print(f"No corpus documents loaded for {dataset_id}. Retrieval will yield no results.")
+                            # Store a dummy retriever or handle this state appropriately
+                            # For now, we'll proceed, and retriever.query will likely return empty.
+                            # To be robust, one might skip retrieval or use a non-retrieval path.
+                            # Storing the retriever instance even if corpus is empty to avoid re-init logic.
+                            retrievers_cache[dataset_id] = retriever  # Store the common retriever instance
+
+                        # Ingest documents only if corpus_docs exist for this dataset_id
+                        if corpus_docs:
+                            active_retriever_for_dataset = retrievers_cache.get(dataset_id)
+                            if active_retriever_for_dataset is None or not hasattr(active_retriever_for_dataset,
+                                                                                   '_ingested_marker_' + dataset_id):
+                                # If retriever not cached for this dataset OR not marked as ingested for this dataset
+                                print(
+                                    f"Ingesting {len(corpus_docs)} documents for {dataset_id} into {args.retrieval_strategy}...")
+
+                                async def ingest_op():
+                                    # Important: If retriever instance is shared, ensure it handles new corpus correctly
+                                    # For BaselineRetrievalMethod, it recreates its DB, so it's okay.
+                                    # If cleanup is needed between different datasets using the *same* retriever instance:
+                                    if hasattr(retriever, 'cleanup_for_new_corpus'):  # Hypothetical method
+                                        await retriever.cleanup_for_new_corpus()
+                                    elif hasattr(retriever, 'cleanup'):  # General cleanup might reset internal state
+                                        await retriever.cleanup()  # Call cleanup if new dataset, to clear old state
+
+                                    for doc in corpus_docs:
+                                        await retriever.ingest_document(doc)
+                                    await retriever.sync_all_documents()
+                                    setattr(retriever, '_ingested_marker_' + dataset_id, True)  # Mark as ingested
+
+                                asyncio.run(ingest_op())
+                                retrievers_cache[dataset_id] = retriever  # Cache the ingested retriever
+
+                    current_task_retriever = retrievers_cache.get(dataset_id)
+
+                    if not current_task_retriever or not corpus_cache.get(dataset_id):
+                        print(
+                            f"Retriever or corpus not available for {dataset_id}. Proceeding without retrieval for this task's items.")
+                        for i, row in test_df.iterrows():
+                            original_query_text = row['text']
+                            final_prompt = generate_prompts_with_rag_context(base_prompt_text_template,
+                                                                             original_query_text, [])
+                            current_task_prompts_to_llm.append(final_prompt)
+                            if args.verbose:
+                                original_indices_for_verbose.append(i)
+                                original_queries_for_verbose.append(original_query_text)
+                                final_prompts_for_llm_verbose.append(final_prompt)
+                                query_responses_for_verbose.append(None)  # No QueryResponse object
+                    else:
+                        print(f"Performing retrieval for {len(test_df)} items in task '{task_name}'...")
+                        for i, row in tqdm(test_df.iterrows(), total=len(test_df), desc="Retrieving contexts"):
+                            original_query_text = row['text']
+                            retrieved_texts_for_llm_contexts = []
+                            query_response_obj = None  # For verbose output
+
+                            try:
+                                query_response_obj = asyncio.run(current_task_retriever.query(original_query_text))
+                                if query_response_obj and query_response_obj.retrieved_snippets:
+                                    for snip_idx, snippet in enumerate(query_response_obj.retrieved_snippets):
+                                        if snip_idx < current_final_top_k:
+                                            try:
+                                                # .answer property reads file; ensure paths are correct
+                                                # Or, if retriever provides text directly (e.g., from BaselineRetrievalMethod.get_embedding_info_text)
+                                                # We need snippet.answer for "original text indicated by span"
+                                                retrieved_texts_for_llm_contexts.append(snippet.answer)
+                                            except FileNotFoundError:
+                                                print(f"Verbose: File for snippet {snippet.file_path} not found.")
+                                                retrieved_texts_for_llm_contexts.append(
+                                                    f"[Content for {snippet.file_path} (span {snippet.span}) not found]")
+                                            except Exception as e_ans:
+                                                print(
+                                                    f"Verbose: Error extracting answer for snippet {snippet.file_path}: {e_ans}")
+                                                retrieved_texts_for_llm_contexts.append(
+                                                    f"[Error extracting content for {snippet.file_path}]")
+                                        else:
+                                            break  # Stop if we have enough for current_final_top_k
+                            except Exception as e_query:
+                                print(f"Error during retrieval for query '{original_query_text[:50]}...': {e_query}")
+                                # query_response_obj remains None or its last state
+
+                            final_prompt = generate_prompts_with_rag_context(base_prompt_text_template,
+                                                                             original_query_text,
+                                                                             retrieved_texts_for_llm_contexts)
+                            current_task_prompts_to_llm.append(final_prompt)
+                            if args.verbose:
+                                original_indices_for_verbose.append(i)  # Or row.name if it's the original index
+                                original_queries_for_verbose.append(original_query_text)
+                                final_prompts_for_llm_verbose.append(final_prompt)
+                                query_responses_for_verbose.append(query_response_obj)
+                else:  # No retriever chosen (retrieval_strategy == "X")
+                    print("No retrieval strategy selected. Generating prompts without retrieved context.")
+                    for i, row in test_df.iterrows():
+                        original_query_text = row['text']
+                        final_prompt = generate_prompts_with_rag_context(base_prompt_text_template, original_query_text,
+                                                                         [])  # Empty context list
+                        current_task_prompts_to_llm.append(final_prompt)
+                        if args.verbose:
+                            original_indices_for_verbose.append(i)
+                            original_queries_for_verbose.append(original_query_text)
+                            final_prompts_for_llm_verbose.append(final_prompt)
+                            query_responses_for_verbose.append(None)
+
+                prompts_to_send_to_llm = current_task_prompts_to_llm
+                # --- End of Retrieval Step ---
+
+                if not prompts_to_send_to_llm or all(p is None for p in prompts_to_send_to_llm):
+                    print(f"No valid prompts after RAG for {task_name}. Skipping generation.")
+                    all_tasks_results_summary[task_result_key] = {"error": "No valid prompts after RAG"}
+                    continue
+
+                print(
+                    f"Generating {len(prompts_to_send_to_llm)} responses for '{task_name}' using '{args.model_name}'...")
+                generation_kwargs_llm = {
+                    "temperature": args.temperature,
+                    "max_new_tokens": args.max_new_tokens,
+                }
+                generations = asyncio.run(llm_generator.generate(prompts_to_send_to_llm, **generation_kwargs_llm))
+
+                if len(generations) != len(prompts_to_send_to_llm):
+                    print(
+                        f"Warning: Number of generations ({len(generations)}) does not match number of prompts ({len(prompts_to_send_to_llm)}). Skipping.")
+                    all_tasks_results_summary[task_result_key] = {
+                        "error": "Mismatch in generations and prompts length after RAG"}
+                    continue
+
+                gold_answers = test_df["answer"].tolist()
+
+                if args.verbose:
+                    write_verbose_output(
+                        verbose_output_dir, task_name, args.model_name,
+                        original_indices_for_verbose,
+                        original_queries_for_verbose,
+                        final_prompts_for_llm_verbose,
+                        generations, gold_answers,
+                        query_responses_for_verbose  # Pass the collected QueryResponse objects
+                    )
+
+                print(f"Evaluating predictions for {task_name}... ({len(gold_answers)} tests)")
+                task_eval_results = evaluate(task_name, generations, gold_answers)
+                print(f"Results for {task_name} (k={current_final_top_k}): {task_eval_results}")
+                all_tasks_results_summary[task_result_key] = task_eval_results
+
             except Exception as e:
-                print(f"Could not load 'test' split for {task_name}: {e}. Skipping task.")
-                all_tasks_results_summary[task_name] = {"error": f"Dataset load failed - {e}"}
+                print(f"An error occurred while processing task {task_name} (k={current_final_top_k}): {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"Skipping task {task_name}")
+                all_tasks_results_summary[task_result_key] = {"error": str(e)}
                 continue
-            # try:
-            #     dataset_splits["train"] = datasets.load_dataset("nguha/legalbench", task_name, split="train", trust_remote_code=True)
-            # except Exception as e:
-            #     print(f"Could not load 'train' split for {task_name}: {e}. Proceeding without train split.")
+        # End of k-loop
 
-            # 2. Load base prompt
-            prompt_file_path = os.path.join(base_task_files_path, task_name, BASE_PROMPT)
-            if not os.path.exists(prompt_file_path):
-                print(f"Prompt file not found for {task_name} at {prompt_file_path}. Skipping task.")
-                all_tasks_results_summary[task_name] = {"error": "Prompt file not found"}
-                continue
-            with open(prompt_file_path, encoding='utf-8') as in_file:
-                prompt_template = in_file.read()
+    # After all k-values and all tasks, write the single summary CSV
+    # The `args` object passed to write_summary_results will reflect the last k if modified,
+    # or the original args if not. The column 'final_top_k' will capture the specific k for each row.
+    # We need to adapt write_summary_results or how we pass data to it if we want one row per (task, k) combo.
+    # The current all_tasks_results_summary has keys like "task_k_val".
+    # Let's flatten this for the summary writer.
 
-            # 3. Create full prompts -> here the retrieved context comes in from the RAG
-            # For now, assuming generate_prompts takes care of incorporating retrieved contexts.
-            # You will need to integrate your RAG retrieval logic here or within generate_prompts.
-            test_df = dataset_splits["test"].to_pandas()
-            # Your RAG integration for prompts would go here
-            # prompts = generate_prompts_with_rag(prompt_template, test_df, retrieved_contexts)
-            prompts = generate_prompts(prompt_template=prompt_template, data_df=test_df)
+    flattened_summary_for_csv = {}
+    for task_k_combo, result in all_tasks_results_summary.items():
+        # task_name_part = "_k".join(task_k_combo.split("_k")[:-1]) # E.g. "cuad_something_k10" -> "cuad_something"
+        # k_val_part = int(task_k_combo.split("_k")[-1])
+        # For now, let's just use the combined key, and the writer can parse it or we add columns
+        flattened_summary_for_csv[task_k_combo] = result
 
-            if not prompts or all(p is None for p in prompts):
-                print(f"No valid prompts generated for {task_name}. Skipping generation.")
-                all_tasks_results_summary[task_name] = {"error": "No valid prompts generated"}
-                continue
+    write_summary_results(summary_results_dir, args.model_name, retrieval_strategy_name_for_logging,
+                          flattened_summary_for_csv, args)  # Pass original args for general params
 
-            # 4. Get LLM Generations
-            print(f"Generating {len(prompts)} responses for '{task_name}' using '{args.model_name}'...")
-            generation_kwargs = {
-                "temperature": args.temperature,
-                "max_new_tokens": args.max_new_tokens,
-            }
-            generations = asyncio.run(generator.generate(prompts, **generation_kwargs))
+    print("\n--- Overall Benchmark Summary (also written to CSV) ---")
+    for task_k_key, results in all_tasks_results_summary.items():  # Iterate through the collected results
+        print(f"Task_K_Config: {task_k_key}, Results: {results}")
 
-            if len(generations) != len(prompts):
-                print(f"Warning: Number of generations ({len(generations)}) does not match number of prompts ({len(prompts)}). Skipping evaluation for this task.")
-                all_tasks_results_summary[task_name] = {"error": "Mismatch in generations and prompts length"}
-                continue
-
-            # 5. Evaluation
-            gold_answers = test_df["answer"].tolist()
-            if args.verbose:
-                write_verbose_output(verbose_output_dir, task_name, prompts, generations, gold_answers, args.model_name)
-            print(f"Evaluating predictions for {task_name}... ({len(gold_answers)} tests)")
-            task_eval_results = evaluate(task_name, generations, gold_answers)
-            print(f"Results for {task_name}: {task_eval_results}")
-            all_tasks_results_summary[task_name] = task_eval_results
-
-        except Exception as e:
-            print(f"An error occurred while processing task {task_name}: {e}")
-            import traceback
-            traceback.print_exc()
-            print(f"Skipping task {task_name}")
-            all_tasks_results_summary[task_name] = {"error": str(e)}
-            continue
-
-    write_summary_results(summary_results_dir, args.model_name, retrieval_strategy, all_tasks_results_summary, args)
-
-    print("\n--- Overall Benchmark Summary ---")
-    for task_name, results in all_tasks_results_summary.items():
-        print(f"Task: {task_name}, Results: {results}")
+    # Cleanup retrievers
+    for dataset_id_key, retriever_instance in retrievers_cache.items():
+        if hasattr(retriever_instance, 'cleanup'):
+            print(f"Cleaning up retriever for {dataset_id_key}...")
+            asyncio.run(retriever_instance.cleanup())
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run LLM model for selected LegalBench tasks.")
-    # Task selection arguments
+    parser = argparse.ArgumentParser(description="Run LLM model for selected LegalBench tasks with RAG.")
     parser.add_argument("--license_filter", "-l", type=str, default=None, help="Filter tasks by license.")
     parser.add_argument("--include_tasks", "-i", type=str, nargs='+', default=None,
                         help="List of task names to include.")
     parser.add_argument("--ignore_tasks", "-x", type=str, nargs='+', default=None,
                         help="List of task names to exclude.")
 
-    # Model and Generation arguments
     parser.add_argument("--model_name", "-m", type=str, required=True,
-                        help="Name/path of the model (e.g., 'gpt-4o', 'meta-llama/Llama-2-7b-chat-hf').")
+                        help="Name/path of the LLM (e.g., 'gpt-4o', 'meta-llama/Llama-2-7b-chat-hf').")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
-                        help="Device for local models (e.g., 'cuda', 'cpu', 'mps').")
-    parser.add_argument("--temperature", type=float, default=1.0,
-                        help="Sampling temperature for generation.")  # Default 1.0 is often deterministic for greedy. 0.7 for more diverse.
-    parser.add_argument("--max_new_tokens", type=int, default=256, help="Maximum new tokens to generate.")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for local model inference.")
+                        help="Device for local models.")
+    parser.add_argument("--temperature", type=float, default=0.7,
+                        help="Sampling temperature for LLM generation.")  # Changed default to 0.7
+    parser.add_argument("--max_new_tokens", type=int, default=512,
+                        help="Maximum new tokens for LLM generation.")  # Increased default
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for local LLM inference.")
 
-    # Retrieval strategy arguments
-    parser.add_argument("--retrieval_strategy", type=str, default="X",
-                        help="Name of the retrieval strategy used (default: X for none/baseline).")
+    parser.add_argument("--retrieval_strategy", "-r", type=str, default="s-rcts_oai3L_X",  # Defaulting to your example
+                        help="Name of the retrieval strategy (from retrieval.py configs, or 'X' for no retrieval).")
+    parser.add_argument("--final_top_k", type=int, nargs='+', default=[4],
+                        help="Number of top retrieved snippets to use for context (can be multiple values for multiple runs).")
 
-    # Other argument
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Write detailed output (index, prompt, generation, gold_answer) to a CSV file for each task.")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Write detailed output CSV for each task.")
 
     parsed_args = parser.parse_args()
 
