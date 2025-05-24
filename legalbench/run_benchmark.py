@@ -413,4 +413,4 @@ if __name__ == "__main__":
     if not TASKS:
         print("Error: The global TASKS list is empty. Please populate it from legalbench.tasks.")
     else:
-        main(parsed_args)
+        main(parsed_args)  # TODO: Maybe make the main function async to avoid instance level Semaphores (mains as event loop)
