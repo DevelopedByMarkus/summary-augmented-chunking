@@ -81,7 +81,8 @@ def get_selected_tasks(
 
 def main(args):
     start_timestamp = datetime.now()
-    print(f"Start run at (YYYYmmdd_HHMMSS): {start_timestamp.strftime('%Y%m%d_%H%M%S')}")
+    start_ts_str = start_timestamp.strftime('%Y%m%d_%H%M%S')
+    print(f"Start run at (YYYYmmdd_HHMMSS): {start_ts_str}")
 
     datasets.utils.logging.set_verbosity_error()
     print("All available tasks (count):", len(TASKS))
@@ -343,7 +344,7 @@ def main(args):
                         final_prompts_for_llm_verbose,
                         generations, gold_answers,
                         query_responses_for_verbose,
-                        start_timestamp,
+                        start_ts_str,
                     )
 
                 print(f"Evaluating predictions for {task_name}... ({len(gold_answers)} tests)")
@@ -375,7 +376,7 @@ def main(args):
         flattened_summary_for_csv[task_k_combo] = result
 
     write_summary_results(summary_results_dir, args.model_name, retrieval_strategy_name_for_logging,
-                          flattened_summary_for_csv, args, start_timestamp)
+                          flattened_summary_for_csv, args, start_ts_str)
 
     print("\n--- Overall Benchmark Summary ---")
     for task_k_key, results in all_tasks_results_summary.items():  # Iterate through the collected results
@@ -404,7 +405,8 @@ def main(args):
         print(f"Error closing global AI connections: {e}")
 
     end_timestamp = datetime.now()
-    print(f"\nScript finished at (YYYYmmdd_HHMMSS): {end_timestamp.strftime('%Y%m%d_%H%M%S')}")
+    end_ts_str = end_timestamp.strftime('%Y%m%d_%H%M%S')
+    print(f"\nScript finished at (YYYYmmdd_HHMMSS): {end_ts_str}")
     print(f"Run took so long: {end_timestamp - start_timestamp}")
 
 
