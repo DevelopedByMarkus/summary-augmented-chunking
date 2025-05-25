@@ -1,7 +1,6 @@
 import csv
 import os
 import re
-from datetime import datetime
 
 
 def write_verbose_output(output_dir, task_name, model_name, item_indices, original_queries, final_prompts_to_llm,

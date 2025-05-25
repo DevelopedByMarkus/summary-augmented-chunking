@@ -1,4 +1,3 @@
-# legalbench/retrieval.py
 import os
 from legalbenchrag.methods.baseline import BaselineRetrievalMethod, ChunkingStrategy, \
     RetrievalStrategy as BaselineStrategyType
@@ -11,6 +10,20 @@ from legalbenchrag.methods.retrieval_strategies import (
     DEFAULT_PROMPT_TARGET_CHAR_LENGTH,
     DEFAULT_SUMMARY_TRUNCATION_LENGTH
 )
+
+PROMPT_TEMPLATE_WITH_CONTEXT = """You are a legal expert. Please answer the following query considering the provided context information.
+
+[Relevant Context Snippets Start]
+{formatted_contexts}
+[Relevant Context Snippets End]
+
+[Original Query Start]
+{original_query_from_base_template}
+[Original Query End]
+
+Answer:
+"""
+
 
 # Define your retrieval strategy configurations here
 # This dictionary maps a string name (from args.retrieval_strategy) to a full Pydantic model config
@@ -101,20 +114,6 @@ def load_corpus_for_dataset(dataset_id: str, corpus_base_path: str = "./data/cor
                 print(f"Error reading document '{full_file_path}': {e}. Skipping.")
     print(f"Loaded {len(corpus_docs)} documents for dataset '{dataset_id}'.")
     return corpus_docs
-
-
-PROMPT_TEMPLATE_WITH_CONTEXT = """Please answer the following query based on the provided context information.
-
-[Relevant Context Snippets Start]
-{formatted_contexts}
-[Relevant Context Snippets End]
-
-[Original Query Start]
-{original_query_from_base_template}
-[Original Query End]
-
-Answer:
-"""
 
 
 # This function will now replace your existing generate_prompts if it was simpler,
