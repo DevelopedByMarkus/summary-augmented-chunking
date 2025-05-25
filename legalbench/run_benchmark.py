@@ -4,6 +4,7 @@ import os
 import argparse
 import torch
 import asyncio
+from datetime import datetime
 
 from legalbench.tasks import TASKS
 # Assuming generate_prompts is no longer needed if generate_prompts_with_rag_context is used directly
@@ -79,6 +80,9 @@ def get_selected_tasks(
 
 
 def main(args):
+    start_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    print(f"Start run at (YYYYmmdd_HHMMSS): {start_timestamp}")
+
     datasets.utils.logging.set_verbosity_error()
     print("All available tasks (count):", len(TASKS))
 
@@ -338,7 +342,8 @@ def main(args):
                         original_queries_for_verbose,
                         final_prompts_for_llm_verbose,
                         generations, gold_answers,
-                        query_responses_for_verbose  # Pass the collected QueryResponse objects
+                        query_responses_for_verbose,
+                        start_timestamp,
                     )
 
                 print(f"Evaluating predictions for {task_name}... ({len(gold_answers)} tests)")
@@ -370,9 +375,9 @@ def main(args):
         flattened_summary_for_csv[task_k_combo] = result
 
     write_summary_results(summary_results_dir, args.model_name, retrieval_strategy_name_for_logging,
-                          flattened_summary_for_csv, args)  # Pass original args for general params
+                          flattened_summary_for_csv, args, start_timestamp)
 
-    print("\n--- Overall Benchmark Summary (also written to CSV) ---")
+    print("\n--- Overall Benchmark Summary ---")
     for task_k_key, results in all_tasks_results_summary.items():  # Iterate through the collected results
         print(f"Task_K_Config: {task_k_key}, Results: {results}")
 
@@ -381,6 +386,26 @@ def main(args):
         if hasattr(retriever_instance, 'cleanup'):
             print(f"Cleaning up retriever for {dataset_id_key}...")
             asyncio.run(retriever_instance.cleanup())
+
+    # Cleanup LLM Generator's HTTP client
+    if llm_generator and hasattr(llm_generator, 'close_http_client'):
+        try:
+            asyncio.run(llm_generator.close_http_client())
+        except Exception as e:
+            print(f"Error closing LLM generator's HTTP client: {e}")
+
+    try:
+        from legalbenchrag.utils.ai import close_all_ai_connections
+        if callable(close_all_ai_connections):
+            asyncio.run(close_all_ai_connections())
+    except ImportError:
+        print("Note: close_all_ai_connections not found in legalbenchrag.utils.ai.")
+    except Exception as e:
+        print(f"Error closing global AI connections: {e}")
+
+    end_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    print(f"\nScript finished at (YYYYmmdd_HHMMSS): {end_timestamp}")
+    print(f"Run took so long: {end_timestamp} - {start_timestamp}")
 
 
 if __name__ == "__main__":
