@@ -1,11 +1,41 @@
 from abc import ABC, abstractmethod
 import asyncio
 import os
+import re
+
+import httpx
 import torch
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from openai import AsyncOpenAI, APIError
 from legalbenchrag.utils.credentials import credentials
+
+
+DEFAULT_CONCURRENCY_LIMIT = 1  # Set this to one to avoid errors for now
+
+
+def clean_response(response: str | None) -> str:
+    """
+    Cleans the LLM response to extract only "Yes" or "No".
+
+    Parameters:
+        response (str | None): The raw response from the LLM.
+
+    Returns:
+        str: "Yes" or "No" if found, otherwise an empty string.
+    """
+    if not response:
+        return ""
+
+    # Normalize and remove leading tags like "Answer:", "Label:", etc.
+    response = response.strip().lower()
+
+    # Look for 'yes' or 'no' at the beginning or inside the sentence
+    match = re.search(r'\b(yes|no)\b', response)
+    if match:
+        return match.group(1).capitalize()
+
+    return ""
 
 
 class BaseGenerator(ABC):
@@ -173,8 +203,9 @@ class LlamaLocalGenerator(LocalGenerator):
                 # Check if generated sequence is longer than prompt (i.e., something was generated)
                 if len(output_ids) > prompt_length:
                     newly_generated_ids = output_ids[prompt_length:]
-                    decoded_text = self.tokenizer.decode(newly_generated_ids, skip_special_tokens=True)
-                    batch_results.append(decoded_text.strip())
+                    decoded_text = self.tokenizer.decode(newly_generated_ids, skip_special_tokens=True).strip()
+                    res = clean_response(decoded_text or None)
+                    batch_results.append(res)
                 else:
                     # Nothing new was generated, or generation was shorter than expected (e.g., only EOS)
                     batch_results.append("")  # Or some indicator of no new generation
