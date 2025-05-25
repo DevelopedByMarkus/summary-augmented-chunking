@@ -80,8 +80,8 @@ def get_selected_tasks(
 
 
 def main(args):
-    start_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    print(f"Start run at (YYYYmmdd_HHMMSS): {start_timestamp}")
+    start_timestamp = datetime.now()
+    print(f"Start run at (YYYYmmdd_HHMMSS): {start_timestamp.strftime('%Y%m%d_%H%M%S')}")
 
     datasets.utils.logging.set_verbosity_error()
     print("All available tasks (count):", len(TASKS))
@@ -403,9 +403,9 @@ def main(args):
     except Exception as e:
         print(f"Error closing global AI connections: {e}")
 
-    end_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    print(f"\nScript finished at (YYYYmmdd_HHMMSS): {end_timestamp}")
-    print(f"Run took so long: {end_timestamp} - {start_timestamp}")
+    end_timestamp = datetime.now()
+    print(f"\nScript finished at (YYYYmmdd_HHMMSS): {end_timestamp.strftime('%Y%m%d_%H%M%S')}")
+    print(f"Run took so long: {end_timestamp - start_timestamp}")
 
 
 if __name__ == "__main__":

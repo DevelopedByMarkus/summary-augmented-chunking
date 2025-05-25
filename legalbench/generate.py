@@ -60,14 +60,20 @@ class LocalGenerator(BaseGenerator, ABC):
 class APIGenerator(BaseGenerator, ABC):
     def __init__(self, model_name: str, **kwargs):
         super().__init__(model_name, **kwargs)
-        DEFAULT_CONCURRENCY_LIMIT = 10
         self.concurrency_limit = DEFAULT_CONCURRENCY_LIMIT
 
 
 class OpenAIGenerator(APIGenerator):
+    _shared_httpx_client_for_instance: httpx.AsyncClient  # To manage its lifecycle
+
     def __init__(self, model_name: str, api_key: str, **kwargs):
         super().__init__(model_name, **kwargs)
-        self.client = AsyncOpenAI(api_key=api_key)
+        self._shared_httpx_client_for_instance = httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0, read=50.0),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            follow_redirects=True
+        )
+        self.client = AsyncOpenAI(api_key=api_key, http_client=self._shared_httpx_client_for_instance)
 
     async def _get_completion(self, prompt: str, semaphore: asyncio.Semaphore, temperature: float,
                               max_new_tokens: int) -> str | None:
@@ -111,11 +117,21 @@ class OpenAIGenerator(APIGenerator):
         # The calling code expects a list of strings of the same length as prompts.
         final_results = []
         for i, res in enumerate(results):
-            if res is None:
+            # Clean the response
+            cleaned_res = clean_response(res)
+            if cleaned_res is None:
                 final_results.append(f"ERROR: No response for prompt {i}")
             else:
-                final_results.append(res)
+                final_results.append(cleaned_res)
         return final_results
+
+    # It's good practice to provide a way to close the http_client if created by this class
+    async def close_http_client(self):
+        if hasattr(self, '_shared_httpx_client_for_instance') and \
+                self._shared_httpx_client_for_instance and \
+                not self._shared_httpx_client_for_instance.is_closed:
+            print(f"Closing httpx client for OpenAIGenerator {self.model_name}")
+            await self._shared_httpx_client_for_instance.aclose()
 
 
 class LlamaLocalGenerator(LocalGenerator):
