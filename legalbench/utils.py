@@ -3,7 +3,7 @@ import os
 import re
 
 
-def write_verbose_output(output_dir, task_name, model_name, retreival_strategy, temperature, item_indices, original_queries, final_prompts_to_llm,
+def write_verbose_output(output_dir, task_name, model_name, retreival_strategy, final_top_k, item_indices, original_queries, final_prompts_to_llm,
                          generations, gold_answers, query_responses=None, timestamp=None):
     """Writes detailed output to a CSV file for a given task.
     item_indices: list of original indices from the test_df.
@@ -18,9 +18,8 @@ def write_verbose_output(output_dir, task_name, model_name, retreival_strategy, 
     safe_model_name = model_name.replace("/", "_").replace("\\", "_")
     safe_model_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in safe_model_name)
     safe_retrieval_strat = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in retreival_strategy)
-    temp_str = str(temperature)
 
-    filename = os.path.join(output_dir, f"{safe_task_name}_{safe_model_name}_{safe_retrieval_strat}_{temp_str}_{timestamp}.csv")
+    filename = os.path.join(output_dir, f"{safe_task_name}_{safe_model_name}_{safe_retrieval_strat}_k{final_top_k}_{timestamp}.csv")
 
     print(f"Writing verbose output to: {filename}")
 
@@ -38,8 +37,9 @@ def write_verbose_output(output_dir, task_name, model_name, retreival_strategy, 
                 'final_llm_prompt': final_prompts_to_llm[i] if i < len(final_prompts_to_llm) else "N/A",
                 'generated_output': generations[i] if i < len(generations) else "N/A (generation missing)",
                 'gold_answer': gold_answers[i] if i < len(gold_answers) else "N/A (gold_answer missing)",
+                'final_top_k': final_top_k,
                 'num_retrieved_snippets': "N/A",
-                'retrieved_snippets_full_text': "N/A"
+                'retrieved_snippets_full_text': "N/A",
             }
 
             if query_responses and i < len(query_responses) and query_responses[i] is not None:
@@ -63,15 +63,14 @@ def write_verbose_output(output_dir, task_name, model_name, retreival_strategy, 
             writer.writerow(row_data)
 
 
-def write_summary_results(results_dir, model_name, retrieval_strategy, temperature, all_task_results, args_params, timestamp=None):
+def write_summary_results(results_dir, model_name, retrieval_strategy, all_task_results, args_params, timestamp=None):
     """Writes summary results and parameters for all tasks to a single CSV file."""
     os.makedirs(results_dir, exist_ok=True)
 
     safe_model_name = re.sub(r'[\\/*?:"<>|]', "_", model_name)
     safe_model_name = safe_model_name.replace("/", "_")
-    temp_str = str(temperature)
 
-    filename = os.path.join(results_dir, f"{safe_model_name}_{retrieval_strategy}_{temp_str}_{timestamp}.csv")
+    filename = os.path.join(results_dir, f"{safe_model_name}_{retrieval_strategy}_{timestamp}.csv")
     print(f"Writing summary results to: {filename}")
 
     base_fieldnames = ['index', 'task_name', 'model_name', 'retrieval_strategy', 'final_top_k',
@@ -93,12 +92,13 @@ def write_summary_results(results_dir, model_name, retrieval_strategy, temperatu
         writer.writeheader()
 
         for i, (task_name, task_result) in enumerate(all_task_results.items()):
+            task_name, final_top_k = task_name.rsplit('_k-', 1)
             row_data = {
                 'index': i,
                 'task_name': task_name,
                 'model_name': args_params.model_name,
                 'retrieval_strategy': retrieval_strategy,
-                'final_top_k': args_params.final_top_k,  # Add final_top_k from args
+                'final_top_k': final_top_k,
                 'temperature': args_params.temperature,
                 'max_new_tokens': args_params.max_new_tokens,
                 'batch_size': args_params.batch_size,

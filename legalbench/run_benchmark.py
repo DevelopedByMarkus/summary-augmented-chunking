@@ -18,6 +18,7 @@ from legalbenchrag.benchmark_types import Document as LegalBenchRAGDocument  # F
 
 _license_cache = {}
 BASE_PROMPT_FILENAME = "claude_prompt.txt"  # refined prompt, or could be "base_prompt.txt"
+base_task_files_path = "legalbench/tasks"
 
 
 def get_task_license(task_name, repo_id="nguha/legalbench"):
@@ -123,11 +124,9 @@ def main(args):
         traceback.print_exc()
         return
 
-    base_task_files_path = "legalbench/tasks"
-    verbose_output_dir = "legalbench/output"
-    summary_results_dir = "legalbench/results"
-
     retrieval_strategy_name_for_logging = args.retrieval_strategy
+    if retrieval_strategy_name_for_logging == "X":
+        retrieval_strategy_name_for_logging = "None"
 
     all_tasks_results_summary = {}
     retrievers_cache = {}  # Cache for initialized retrievers per top-level dataset_id
@@ -138,23 +137,21 @@ def main(args):
 
     # Determine loop for final_top_k
     k_values_to_run = args.final_top_k
-    if not isinstance(k_values_to_run, list):  # If single int was passed
-        k_values_to_run = [k_values_to_run]
+    if not retriever or k_values_to_run is None or k_values_to_run == [] or k_values_to_run == [0]:
+        k_values_to_run = [0]
+    else:
+        if not isinstance(k_values_to_run, list):  # If single int was passed
+            k_values_to_run = [k_values_to_run]
 
     for current_final_top_k in k_values_to_run:
-        print(f"\n===== Running with final_top_k = {current_final_top_k} =====")
-        # Modify args for this iteration of k for logging purposes
-        current_run_args = argparse.Namespace(**vars(args))
-        current_run_args.final_top_k = current_final_top_k
-
-        # Reset summary for this k value if you want separate summary files per k
-        # Or append k to the filename. For now, one summary file overwrites per retrieval_strategy/model.
-        # Let's collect all results and then write one summary file.
-        # The summary file writer will use current_run_args.final_top_k for the column value.
+        if current_final_top_k > 0:
+            print(f"\n===== Running with retrieval and final_top_k = {current_final_top_k} =====")
+        else:
+            print("\n===== Running without retrieval (final_top_k = None) =====")
 
         for idx, task_name in enumerate(tasks_to_run, start=1):
             # Unique key for results if running multiple k values, to avoid overwriting in all_tasks_results_summary
-            task_result_key = f"{task_name}_k{current_final_top_k}"
+            task_result_key = f"{task_name}_k-{current_final_top_k}"
             print(f"\n--- Processing task ({idx}/{len(tasks_to_run)}): '{task_name}' for k={current_final_top_k}")
 
             try:
@@ -338,7 +335,7 @@ def main(args):
 
                 if args.verbose:
                     write_verbose_output(
-                        verbose_output_dir, task_name, args.model_name, args.retrieval_strategy,
+                        args.prompt_dir, task_name, args.model_name, args.retrieval_strategy, current_final_top_k,
                         original_indices_for_verbose,
                         original_queries_for_verbose,
                         final_prompts_for_llm_verbose,
@@ -375,8 +372,8 @@ def main(args):
         # For now, let's just use the combined key, and the writer can parse it or we add columns
         flattened_summary_for_csv[task_k_combo] = result
 
-    write_summary_results(summary_results_dir, args.model_name, retrieval_strategy_name_for_logging,
-                          flattened_summary_for_csv, args, start_ts_str)
+    write_summary_results(args.result_dir, args.model_name, retrieval_strategy_name_for_logging,
+                          flattened_summary_for_csv, args, timestamp=start_ts_str)
 
     print("\n--- Overall Benchmark Summary ---")
     for task_k_key, results in all_tasks_results_summary.items():  # Iterate through the collected results
@@ -431,7 +428,11 @@ if __name__ == "__main__":
     parser.add_argument("--retrieval_strategy", "-r", type=str, default="s-rcts_oai3L_X",  # Defaulting to your example
                         help="Name of the retrieval strategy (from retrieval.py configs, or 'X' for no retrieval).")
     parser.add_argument("--final_top_k", type=int, nargs='+', default=[4],
-                        help="Number of top retrieved snippets to use for context (can be multiple values for multiple runs).")
+                        help="Number of top retrieved snippets to use for context (can be multiple values for multiple runs)."
+                             "If 'X' is set as retrieval_strategy, this is set to [0].")
+
+    parser.add_argument("--result_dir", type=str, default="legalbench/results")
+    parser.add_argument("--prompt_dir", type=str, default="legalbench/output")
 
     parser.add_argument("--verbose", "-v", action="store_true", help="Write detailed output CSV for each task.")
 
