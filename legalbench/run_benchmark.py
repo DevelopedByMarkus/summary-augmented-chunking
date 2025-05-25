@@ -100,7 +100,7 @@ def main(args):
     try:
         llm_generator = create_generator(args)  # LLM Generator
         retriever = None  # Initialize retriever
-        if args.retrieval_strategy != "X":  # "X" means no retrieval
+        if args.retrieval_strategy and args.retrieval_strategy != "X":  # None or "X" means no retrieval
             retriever = create_retriever(args.retrieval_strategy)
             # Set API keys for retrieval components if they need them, e.g. for summarization model in chunking
             # This assumes legalbenchrag.utils.ai.get_ai_connection or similar is used by retrieval methods
