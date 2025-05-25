@@ -338,7 +338,7 @@ def main(args):
 
                 if args.verbose:
                     write_verbose_output(
-                        verbose_output_dir, task_name, args.model_name,
+                        verbose_output_dir, task_name, args.model_name, args.retrieval_strategy,
                         original_indices_for_verbose,
                         original_queries_for_verbose,
                         final_prompts_for_llm_verbose,

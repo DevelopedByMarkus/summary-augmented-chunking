@@ -3,7 +3,7 @@ import os
 import re
 
 
-def write_verbose_output(output_dir, task_name, model_name, item_indices, original_queries, final_prompts_to_llm,
+def write_verbose_output(output_dir, task_name, model_name, retreival_strategy, temperature, item_indices, original_queries, final_prompts_to_llm,
                          generations, gold_answers, query_responses=None, timestamp=None):
     """Writes detailed output to a CSV file for a given task.
     item_indices: list of original indices from the test_df.
@@ -17,8 +17,10 @@ def write_verbose_output(output_dir, task_name, model_name, item_indices, origin
     safe_task_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in task_name)
     safe_model_name = model_name.replace("/", "_").replace("\\", "_")
     safe_model_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in safe_model_name)
+    safe_retrieval_strat = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in retreival_strategy)
+    temp_str = str(temperature)
 
-    filename = os.path.join(output_dir, f"{safe_task_name}_{safe_model_name}_{timestamp}.csv")
+    filename = os.path.join(output_dir, f"{safe_task_name}_{safe_model_name}_{safe_retrieval_strat}_{temp_str}_{timestamp}.csv")
 
     print(f"Writing verbose output to: {filename}")
 
@@ -61,14 +63,15 @@ def write_verbose_output(output_dir, task_name, model_name, item_indices, origin
             writer.writerow(row_data)
 
 
-def write_summary_results(results_dir, model_name, retrieval_strategy, all_task_results, args_params, timestamp=None):
+def write_summary_results(results_dir, model_name, retrieval_strategy, temperature, all_task_results, args_params, timestamp=None):
     """Writes summary results and parameters for all tasks to a single CSV file."""
     os.makedirs(results_dir, exist_ok=True)
 
     safe_model_name = re.sub(r'[\\/*?:"<>|]', "_", model_name)
     safe_model_name = safe_model_name.replace("/", "_")
+    temp_str = str(temperature)
 
-    filename = os.path.join(results_dir, f"{safe_model_name}_{retrieval_strategy}_{timestamp}.csv")
+    filename = os.path.join(results_dir, f"{safe_model_name}_{retrieval_strategy}_{temp_str}_{timestamp}.csv")
     print(f"Writing summary results to: {filename}")
 
     base_fieldnames = ['index', 'task_name', 'model_name', 'retrieval_strategy', 'final_top_k',
