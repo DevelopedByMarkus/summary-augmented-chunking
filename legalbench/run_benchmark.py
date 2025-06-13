@@ -80,7 +80,7 @@ def get_selected_tasks(
     return final_selected_tasks
 
 
-def main(args):
+async def main(args):
     start_timestamp = datetime.now()
     start_ts_str = start_timestamp.strftime('%Y%m%d_%H%M%S')
     print(f"Start run at (YYYYmmdd_HHMMSS): {start_ts_str}")
@@ -236,7 +236,7 @@ def main(args):
                                     await retriever.sync_all_documents()
                                     setattr(retriever, '_ingested_marker_' + dataset_id, True)  # Mark as ingested
 
-                                asyncio.run(ingest_op())
+                                await ingest_op()
                                 retrievers_cache[dataset_id] = retriever  # Cache the ingested retriever
 
                     current_task_retriever = retrievers_cache.get(dataset_id)
@@ -262,7 +262,7 @@ def main(args):
                             query_response_obj = None  # For verbose output
 
                             try:
-                                query_response_obj = asyncio.run(current_task_retriever.query(original_query_text))
+                                query_response_obj = await current_task_retriever.query(original_query_text)
                                 if query_response_obj and query_response_obj.retrieved_snippets:
                                     for snip_idx, snippet in enumerate(query_response_obj.retrieved_snippets):
                                         if snip_idx < current_final_top_k:
@@ -322,7 +322,7 @@ def main(args):
                     "temperature": args.temperature,
                     "max_new_tokens": args.max_new_tokens,
                 }
-                generations = asyncio.run(llm_generator.generate(prompts_to_send_to_llm, **generation_kwargs_llm))
+                generations = await llm_generator.generate(prompts_to_send_to_llm, **generation_kwargs_llm)
 
                 if len(generations) != len(prompts_to_send_to_llm):
                     print(
@@ -383,19 +383,19 @@ def main(args):
     for dataset_id_key, retriever_instance in retrievers_cache.items():
         if hasattr(retriever_instance, 'cleanup'):
             print(f"Cleaning up retriever for {dataset_id_key}...")
-            asyncio.run(retriever_instance.cleanup())
+            await retriever_instance.cleanup()
 
     # Cleanup LLM Generator's HTTP client
     if llm_generator and hasattr(llm_generator, 'close_http_client'):
         try:
-            asyncio.run(llm_generator.close_http_client())
+            await llm_generator.close_http_client()
         except Exception as e:
             print(f"Error closing LLM generator's HTTP client: {e}")
 
     try:
         from legalbenchrag.utils.ai import close_all_ai_connections
         if callable(close_all_ai_connections):
-            asyncio.run(close_all_ai_connections())
+            await close_all_ai_connections()
     except ImportError:
         print("Note: close_all_ai_connections not found in legalbenchrag.utils.ai.")
     except Exception as e:
@@ -441,4 +441,4 @@ if __name__ == "__main__":
     if not TASKS:
         print("Error: The global TASKS list is empty. Please populate it from legalbench.tasks.")
     else:
-        main(parsed_args)  # TODO: Maybe make the main function async to avoid instance level Semaphores (mains as event loop)
+        asyncio.run(main(parsed_args))
