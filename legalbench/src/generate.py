@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import asyncio
 import os
 import re
+from typing import Optional
 
 import httpx
 import torch
@@ -9,6 +10,7 @@ from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from openai import AsyncOpenAI, APIError
 from legalbenchrag.utils.credentials import credentials
+import cohere
 
 
 DEFAULT_CONCURRENCY_LIMIT = 1  # Set this to one to avoid errors for now
@@ -31,7 +33,7 @@ def clean_response(response: str | None) -> str:
     response = response.strip().lower()
 
     # Look for 'yes' or 'no' at the beginning or inside the sentence
-    match = re.search(r'\b(yes|no)\b', response)
+    match = re.search(r'\b(yes|no)\b', response)  # TODO: Answers might be other than Yes/No -> make it variable!
     if match:
         return match.group(1).capitalize()
 
@@ -61,6 +63,47 @@ class APIGenerator(BaseGenerator, ABC):
     def __init__(self, model_name: str, **kwargs):
         super().__init__(model_name, **kwargs)
         self.concurrency_limit = DEFAULT_CONCURRENCY_LIMIT
+
+    @abstractmethod
+    async def _get_completion(self, prompt: str, semaphore: asyncio.Semaphore,
+                              temperature: float, max_new_tokens: int) -> str | None:
+        """Each API-specific generator must implement this."""
+        pass
+
+    async def generate(self, prompts: list[str], **generation_kwargs) -> list[str]:
+        temperature = generation_kwargs.get("temperature", self.temperature)
+        max_new_tokens = generation_kwargs.get("max_new_tokens", self.max_new_tokens)
+        semaphore = asyncio.Semaphore(self.concurrency_limit)
+        tasks = []
+        for prompt_text in prompts:
+            if not prompt_text or not isinstance(prompt_text, str):
+                print(f"Warning: Invalid or empty prompt skipped: {prompt_text}")
+                tasks.append(
+                    asyncio.create_task(asyncio.sleep(0, result="ERROR: Invalid prompt")))  # Ensure future has a result
+                continue
+            tasks.append(self._get_completion(prompt_text, semaphore, temperature, max_new_tokens))
+
+        results = await asyncio.gather(*tasks, return_exceptions=False)  # Exceptions handled in _get_completion
+
+        # Ensure all results are strings, even if None was returned or an error string.
+        # The calling code expects a list of strings of the same length as prompts.
+        final_results = []
+        for i, res in enumerate(results):
+            # Clean the response
+            cleaned_res = clean_response(res)
+            if cleaned_res is None:
+                final_results.append(f"ERROR: No response for prompt {i}")
+            else:
+                final_results.append(cleaned_res)
+        return final_results
+
+    # It's good practice to provide a way to close the http_client if created by this class
+    async def close_http_client(self):
+        if hasattr(self, '_shared_httpx_client_for_instance') and \
+                self._shared_httpx_client_for_instance and \
+                not self._shared_httpx_client_for_instance.is_closed:
+            print(f"Closing httpx client for OpenAIGenerator {self.model_name}")
+            await self._shared_httpx_client_for_instance.aclose()
 
 
 class OpenAIGenerator(APIGenerator):
@@ -98,40 +141,32 @@ class OpenAIGenerator(APIGenerator):
                 print(f"An unexpected error occurred with OpenAI for prompt '{prompt[:50]}...': {e}")
                 return f"ERROR: Unexpected error - {e}"
 
-    async def generate(self, prompts: list[str], **generation_kwargs) -> list[str]:
-        temperature = generation_kwargs.get("temperature", self.temperature)
-        max_new_tokens = generation_kwargs.get("max_new_tokens", self.max_new_tokens)
-        semaphore = asyncio.Semaphore(self.concurrency_limit)
-        tasks = []
-        for prompt_text in prompts:
-            if not prompt_text or not isinstance(prompt_text, str):
-                print(f"Warning: Invalid or empty prompt skipped: {prompt_text}")
-                tasks.append(
-                    asyncio.create_task(asyncio.sleep(0, result="ERROR: Invalid prompt")))  # Ensure future has a result
-                continue
-            tasks.append(self._get_completion(prompt_text, semaphore, temperature, max_new_tokens))
 
-        results = await asyncio.gather(*tasks, return_exceptions=False)  # Exceptions handled in _get_completion
+class CohereGenerator(APIGenerator):
+    _shared_httpx_client_for_instance: Optional[httpx.AsyncClient] = None  # To manage its lifecycle
 
-        # Ensure all results are strings, even if None was returned or an error string.
-        # The calling code expects a list of strings of the same length as prompts.
-        final_results = []
-        for i, res in enumerate(results):
-            # Clean the response
-            cleaned_res = clean_response(res)
-            if cleaned_res is None:
-                final_results.append(f"ERROR: No response for prompt {i}")
-            else:
-                final_results.append(cleaned_res)
-        return final_results
+    def __init__(self, model_name: str, api_key: str, **kwargs):
+        super().__init__(model_name, **kwargs)
+        self._shared_httpx_client_for_instance = None  # Cohere handles HTTP internally
+        self.client = cohere.AsyncClient(api_key)
 
-    # It's good practice to provide a way to close the http_client if created by this class
-    async def close_http_client(self):
-        if hasattr(self, '_shared_httpx_client_for_instance') and \
-                self._shared_httpx_client_for_instance and \
-                not self._shared_httpx_client_for_instance.is_closed:
-            print(f"Closing httpx client for OpenAIGenerator {self.model_name}")
-            await self._shared_httpx_client_for_instance.aclose()
+    async def _get_completion(self, prompt: str, semaphore: asyncio.Semaphore,
+                              temperature: float, max_new_tokens: int) -> str | None:
+        async with semaphore:
+            try:
+                chat_completion = await self.client.chat(
+                    model=self.model_name,
+                    message=prompt,
+                    temperature=temperature,
+                    max_tokens=max_new_tokens,
+                )
+                return chat_completion.text.strip() if chat_completion.text else None
+            except APIError as e:
+                print(f"Cohere API error for prompt '{prompt[:50]}...{prompt[50:]}': {e}")
+                return f"ERROR: Cohere API Error - {e}"
+            except Exception as e:
+                print(f"Unexpected error with Cohere for prompt '{prompt[:50]}...{prompt[50:]}': {e}")
+                return f"ERROR: Unexpected error - {e}"
 
 
 class LlamaLocalGenerator(LocalGenerator):
@@ -251,6 +286,15 @@ def create_generator(args) -> BaseGenerator:
         if not api_key:
             raise ValueError("OpenAI API key must be provided via OPENAI_API_KEY environment variable for GPT models.")
         return OpenAIGenerator(model_name=args.model_name, api_key=api_key, **common_kwargs)
+
+    elif "command-" in model_name_lower or "cohere/" in model_name_lower:
+        # Set API keys from credentials
+        os.environ["COHERE_API_KEY"] = credentials.ai.cohere_api_key.get_secret_value()
+        # TODO: Refactor credentials in a project credentials dir
+        api_key = os.getenv("COHERE_API_KEY")
+        if not api_key:
+            raise ValueError("Cohere API key must be provided via COHERE_API_KEY environment variable for Cohere models.")
+        return CohereGenerator(model_name=args.model_name, api_key=api_key, **common_kwargs)
 
     elif "llama" in model_name_lower:
         return LlamaLocalGenerator(

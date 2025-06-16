@@ -6,13 +6,13 @@ import torch
 import asyncio
 from datetime import datetime
 
-from legalbench.tasks import TASKS
+from legalbench.src.tasks import TASKS
 # Assuming generate_prompts is no longer needed if generate_prompts_with_rag_context is used directly
 # from legalbench.utils import generate_prompts
-from legalbench.utils import write_summary_results, write_verbose_output
-from legalbench.evaluation import evaluate
-from legalbench.generate import create_generator  # LLM Generator factory
-from legalbench.retrieval import create_retriever, load_corpus_for_dataset, \
+from legalbench.src.utils import write_summary_results, write_verbose_output
+from legalbench.src.evaluation import evaluate
+from legalbench.src.generate import create_generator  # LLM Generator factory
+from legalbench.src.retrieval import create_retriever, load_corpus_for_dataset, \
     generate_prompts_with_rag_context  # RAG components
 from legalbenchrag.benchmark_types import Document as LegalBenchRAGDocument  # For type hinting corpus
 
