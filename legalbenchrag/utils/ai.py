@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 import torch
+import random
 from collections.abc import Callable, Coroutine
 from enum import Enum
 from typing import Any, Literal, cast, Dict, List
@@ -137,21 +138,25 @@ class AIConnection:
     anthropic_client: AsyncAnthropic
     sync_anthropic_client: Anthropic
 
-    # This shared client is for libraries that explicitly support passing one.
     shared_httpx_async_client_for_supported_libs: httpx.AsyncClient
+    _sync_anthropic_http_client: httpx.Client
 
-    cohere_ratelimit_semaphore = asyncio.Semaphore(1)
-    voyageai_ratelimit_semaphore = asyncio.Semaphore(1)
-    openai_ratelimit_semaphore = asyncio.Semaphore(1)
-    anthropic_ratelimit_semaphore = asyncio.Semaphore(1)
+    # Instance-level semaphores
+    openai_semaphore_instance: asyncio.Semaphore
+    cohere_semaphore_instance: asyncio.Semaphore
+    voyageai_semaphore_instance: asyncio.Semaphore
+    anthropic_semaphore_instance: asyncio.Semaphore
 
     def __init__(self) -> None:
-        # This client will be passed to OpenAI, Anthropic, and Cohere
         self.shared_httpx_async_client_for_supported_libs = httpx.AsyncClient(
-            timeout=httpx.Timeout(60.0, connect=10.0, read=50.0),  # Increased overall timeout
+            timeout=httpx.Timeout(60.0, connect=10.0, read=50.0),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
             follow_redirects=True
-            # httpx uses trust_env=True by default, so it will pick up proxies from env vars
+        )
+        self._sync_anthropic_http_client = httpx.Client(
+            timeout=httpx.Timeout(60.0, connect=10.0, read=50.0),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            follow_redirects=True
         )
 
         self.openai_client = AsyncOpenAI(
@@ -164,11 +169,7 @@ class AIConnection:
         )
         self.sync_anthropic_client = Anthropic(
             api_key=credentials.ai.anthropic_api_key.get_secret_value(),
-            http_client=httpx.Client(  # Sync version needs its own sync httpx client
-                timeout=httpx.Timeout(60.0, connect=10.0, read=50.0),
-                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
-                follow_redirects=True
-            )
+            http_client=self._sync_anthropic_http_client
         )
         self.cohere_client = cohere.AsyncClient(
             api_key=credentials.ai.cohere_api_key.get_secret_value(),
@@ -178,15 +179,24 @@ class AIConnection:
             api_key=credentials.ai.voyageai_api_key.get_secret_value()
         )
 
+        # These semaphores are now instance variables, created when AIConnection is instantiated.
+        # The get_ai_connection function ensures this happens within an active event loop.
+        self.openai_semaphore_instance = asyncio.Semaphore(1)
+        self.cohere_semaphore_instance = asyncio.Semaphore(1)
+        self.voyageai_semaphore_instance = asyncio.Semaphore(1)
+        self.anthropic_semaphore_instance = asyncio.Semaphore(1)
+
     async def close_shared_client(self):
         """Method to explicitly close the shared httpx client used by some libs."""
         if self.shared_httpx_async_client_for_supported_libs and \
                 not self.shared_httpx_async_client_for_supported_libs.is_closed:
+            logger.debug("Closing shared async httpx client.")
             await self.shared_httpx_async_client_for_supported_libs.aclose()
 
-        # Close sync httpx client if it's managed by this class instance
-        if hasattr(self.sync_anthropic_client, 'close') and callable(getattr(self.sync_anthropic_client, 'close')):
-            self.sync_anthropic_client.close()
+        if self._sync_anthropic_http_client and \
+                not self._sync_anthropic_http_client.is_closed:
+            logger.debug("Closing sync httpx client for Anthropic.")
+            self._sync_anthropic_http_client.close()
 
 
 ai_connections: dict[asyncio.AbstractEventLoop, AIConnection] = {}
@@ -194,14 +204,11 @@ ai_connections: dict[asyncio.AbstractEventLoop, AIConnection] = {}
 _ai_connection_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
 
-async def get_ai_connection() -> AIConnection:  # Changed to async to use lock
-    event_loop = asyncio.get_running_loop()  # Use get_running_loop in async context
-
+async def get_ai_connection() -> AIConnection:
+    event_loop = asyncio.get_running_loop()
     if event_loop not in _ai_connection_locks:
-        # This part is tricky if multiple coroutines on the same loop call this simultaneously
-        # before the lock itself is created. This should ideally be initialized earlier
-        # or protected by a global lock for first-time access to _ai_connection_locks.
-        # For simplicity now, assuming this function is not massively parallel on first call for a loop.
+        # This lock creation itself is not thread-safe if multiple threads hit this for the first time for the same new loop
+        # However, in typical asyncio usage with a single main thread managing the loop, this is okay.
         _ai_connection_locks[event_loop] = asyncio.Lock()
 
     async with _ai_connection_locks[event_loop]:
@@ -213,12 +220,14 @@ async def get_ai_connection() -> AIConnection:  # Changed to async to use lock
 
 async def close_all_ai_connections():
     """Closes all shared httpx clients in cached AIConnection objects."""
-    for loop, conn in list(ai_connections.items()):  # Iterate over a copy
-        logger.info(f"Closing AIConnection for event loop {id(loop)}")
-        await conn.close_shared_client()
-        del ai_connections[loop]
-        if loop in _ai_connection_locks:
-            del _ai_connection_locks[loop]
+    for loop_key in list(ai_connections.keys()):  # Iterate over copy of keys
+        conn = ai_connections.pop(loop_key, None)
+        if conn:
+            logger.info(f"Closing AIConnection for event loop {id(loop_key)}")
+            await conn.close_shared_client()
+        if loop_key in _ai_connection_locks:
+            # The lock itself doesn't need explicit closing, it's just a sync primitive
+            del _ai_connection_locks[loop_key]
 
 
 class AIError(Exception):
@@ -234,37 +243,28 @@ class AITimeoutError(AIError, TimeoutError):
 
 
 def ai_num_tokens(model: AIModel | AIEmbeddingModel | AIRerankModel, s: str) -> int:
-    # This function might need to be async if get_ai_connection becomes async and is called here.
-    # For now, assuming it can get a connection if one was already established by an async part.
-    # Let's make it robust by trying to get connection if needed.
-    # However, count_tokens is usually synchronous on client libraries after init.
-
-    # To avoid issues with get_ai_connection potentially being called from sync context here,
-    # let's assume if an AIConnection is needed, it must have been created by an async context first.
-    # This part is a bit tricky if count_tokens itself needs an active async client that's not yet ready.
-    # For tiktoken and simple length estimations, it's fine.
-    # VoyageAI's client.count_tokens might be an issue if client isn't fully ready.
-
     if isinstance(model, AIModel):
         if model.company == "anthropic":
-            # This is problematic as sync_anthropic_client is part of AIConnection
-            # which is fetched via async get_ai_connection.
-            # For simplicity, let's assume a sync client is available or estimate.
-            # conn = get_ai_connection_sync_fallback() # Needs a sync way to get it, or estimate
-            # return conn.sync_anthropic_client.count_tokens(s)
             try:
-                conn = next(iter(ai_connections.values()))  # Try to get any existing connection (hacky)
-                return conn.sync_anthropic_client.count_tokens(s)
-            except (StopIteration, RuntimeError):  # RuntimeError if called from different thread with no loop
-                logger.warning("Anthropic token count failed due to missing AIConnection, estimating.")
-                return int(len(s) / 4)  # Fallback estimation
+                # Try to get an existing sync client if AIConnection was initialized
+                # This is still a bit of a hack for a function that might be called synchronously
+                # Ideally, if this function needs a client, the client should be passed or be available synchronously.
+                if ai_connections:
+                    conn = next(iter(ai_connections.values()))
+                    return conn.sync_anthropic_client.count_tokens(s)
+                else:  # Fallback if no AIConnection instance exists yet
+                    client = Anthropic(api_key=credentials.ai.anthropic_api_key.get_secret_value())
+                    return client.count_tokens(s)
+            except Exception as e:
+                logger.warning(f"Anthropic token count failed ({e}), estimating.")
+                return int(len(s) / 4)
         elif model.company == "openai":
             try:
                 encoding = tiktoken.encoding_for_model(model.model)
                 return len(encoding.encode(s))
-            except Exception:  # Model not found in tiktoken
+            except Exception:
                 logger.warning(f"Tiktoken model {model.model} not found, estimating tokens.")
-                return int(len(s) / 4)  # Fallback estimation
+                return int(len(s) / 4)
     if isinstance(model, AIEmbeddingModel):
         if model.company == "openai":
             try:
@@ -274,19 +274,15 @@ def ai_num_tokens(model: AIModel | AIEmbeddingModel | AIRerankModel, s: str) -> 
                 logger.warning(f"Tiktoken model {model.model} not found, estimating tokens.")
                 return int(len(s) / 4)
         elif model.company == "voyageai":
-            # voyageai.Client().count_tokens is synchronous
-            # We need a way to get a sync voyage client instance or estimate
             try:
-                # This assumes voyageai.Client() can be instantiated on the fly without async loop issues
-                # Or that a sync version is available via AIConnection (it's not currently)
-                # For now, using the global client if already initialized, or estimate.
+                # VoyageAI's sync client for count_tokens
                 sync_voyage_client = voyageai.Client(api_key=credentials.ai.voyageai_api_key.get_secret_value())
-                return sync_voyage_client.count_tokens([s], model=model.model)  # model kwarg added
+                return sync_voyage_client.count_tokens([s], model=model.model)
             except Exception as e:
                 logger.warning(f"VoyageAI token count failed ({e}), estimating.")
                 return int(len(s) / 4)
-        elif model.company == "huggingface":  # Local model
-            return int(len(s) / 4)  # Simple estimation
+        elif model.company == "huggingface":
+            return int(len(s) / 4)
     if isinstance(model, AIRerankModel) and model.company == 'huggingface':
         return int(len(s) / 4)
 
@@ -302,7 +298,7 @@ def get_call_cache_key(
     md5_hasher = hashlib.md5()
     md5_hasher.update(model.model_dump_json().encode())
     for message in messages:
-        md5_hasher.update(md5_hasher.hexdigest().encode())  # This seems like an error, should be message content
+        # Corrected hashing: hash the message content or its dump, not the running hash
         md5_hasher.update(message.model_dump_json().encode())
     key = md5_hasher.hexdigest()
     return key
@@ -325,22 +321,19 @@ async def ai_call(
     if cached_call is not None:
         return cached_call
 
-    num_tokens_input_estimation: int = sum(  # Renamed to avoid conflict if ai_num_tokens is async
+    num_tokens_input_estimation: int = sum(
         [ai_num_tokens(model, message.content) for message in messages]
-        # ai_num_tokens here needs to be careful about async context
     )
 
     return_value: str | None = None
-    ai_conn = await get_ai_connection()  # Get connection once
+    ai_conn = await get_ai_connection()
 
     match model.company:
         case "openai":
             for i in range(num_ratelimit_retries):
                 try:
-                    # Ratelimit semaphore is per-client type, not global to AIConnection instance
-                    async with AIConnection.openai_ratelimit_semaphore:  # Access via class
+                    async with ai_conn.openai_semaphore_instance:  # Use instance semaphore
                         tpm = model.ratelimit_tpm * RATE_LIMIT_RATIO
-                        # num_tokens_input_estimation is used here
                         expected_wait = num_tokens_input_estimation / (tpm / 60) if tpm > 0 else 0
                         await asyncio.sleep(expected_wait)
 
@@ -362,12 +355,14 @@ async def ai_call(
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
-                    assert response.choices[0].message.content is not None
-                    return_value = response.choices[0].message.content
+                    content = response.choices[0].message.content
+                    if content is None:
+                        raise AIError(f"OpenAI response content is None for model {model.model}")
+                    return_value = content
                     break
                 except RateLimitError:
                     logger.warning("OpenAI RateLimitError")
-                    async with AIConnection.openai_ratelimit_semaphore:  # Access via class
+                    async with ai_conn.openai_semaphore_instance:  # Use instance semaphore
                         await asyncio.sleep(backoff_algo(i))
             if return_value is None:
                 raise AITimeoutError("Cannot overcome OpenAI RateLimitError")
@@ -375,7 +370,7 @@ async def ai_call(
         case "anthropic":
             for i in range(num_ratelimit_retries):
                 try:
-                    async with AIConnection.anthropic_ratelimit_semaphore:  # Access via class
+                    async with ai_conn.anthropic_semaphore_instance:  # Use instance semaphore
                         tpm = model.ratelimit_tpm * RATE_LIMIT_RATIO
                         expected_wait = num_tokens_input_estimation / (tpm / 60) if tpm > 0 else 0
                         await asyncio.sleep(expected_wait)
@@ -423,21 +418,23 @@ async def ai_call(
                         model=model.model,
                         system=system_prompt_content,
                         messages=combined_messages_for_anthropic,
-                        temperature=temperature,  # temperature was already a parameter
+                        temperature=temperature,
                         max_tokens=max_tokens,
                     )
-                    assert isinstance(response_message.content[0], anthropic.types.TextBlock)
-                    assert isinstance(response_message.content[0].text, str)
+                    if not response_message.content or not isinstance(response_message.content[0],
+                                                                      anthropic.types.TextBlock) or not isinstance(
+                            response_message.content[0].text, str):
+                        raise AIError(f"Anthropic response content is invalid for model {model.model}")
                     return_value = response_message.content[0].text
                     break
                 except anthropic.RateLimitError as e:
                     logger.warning(f"Anthropic Error: {repr(e)}")
-                    async with AIConnection.anthropic_ratelimit_semaphore:  # Access via class
+                    async with ai_conn.anthropic_semaphore_instance:  # Use instance semaphore
                         await asyncio.sleep(backoff_algo(i))
             if return_value is None:
                 raise AITimeoutError("Cannot overcome Anthropic RateLimitError")
 
-    if return_value is None:  # Should be caught by specific errors above, but as a safeguard
+    if return_value is None:
         raise AIError(f"Failed to get response from AI model {model.company}/{model.model}")
 
     cache.set(cache_key, return_value)
@@ -447,14 +444,14 @@ async def ai_call(
 def get_embeddings_cache_key(
         model: AIEmbeddingModel, text: str, embedding_type: AIEmbeddingType
 ) -> str:
-    key = f"{model.company}||||{model.model}||||{embedding_type.name}||||{hashlib.md5(text.encode()).hexdigest()}"
+    key = f"{model.company}||||{model.model}||||{embedding_type.name}||||{hashlib.md5(text.encode('utf-8', 'replace')).hexdigest()}"
     return key
 
 
 def _encode_local_huggingface(
         model_name: str,
         texts: list[str],
-        embedding_type: AIEmbeddingType,  # embedding_type is used
+        embedding_type: AIEmbeddingType,
         callback: Callable[[], None],
         trust_remote_code: bool = True
 ) -> list[list[float]]:
@@ -476,21 +473,20 @@ def _encode_local_huggingface(
             logger.error(f"HuggingFace: Failed to load model {model_name} onto device {device}: {e}")
             raise RuntimeError(f"Failed to load SentenceTransformer model {model_name}") from e
 
-    model_instance: SentenceTransformer = local_model_cache[model_name]  # Renamed for clarity
+    model_instance: SentenceTransformer = local_model_cache[model_name]
     texts_to_encode = texts
-    # BGE models require specific prefixes for query vs document
     if "bge-" in model_name.lower() and embedding_type == AIEmbeddingType.QUERY:
         texts_to_encode = ["Represent this sentence for searching relevant passages: " + text for text in texts]
 
     logger.debug(f"Encoding {len(texts_to_encode)} texts locally using {model_name}...")
-    embeddings = model_instance.encode(  # Use model_instance
+    embeddings = model_instance.encode(
         texts_to_encode,
-        show_progress_bar=False,  # Typically false for programmatic use
-        batch_size=32  # A common default, can be tuned
+        show_progress_bar=False,
+        batch_size=32
     )
     logger.debug(f"Finished local encoding with {model_name}.")
     embeddings_list = cast(List[List[float]], embeddings.tolist())
-    for _ in range(len(texts)):  # Call callback for each original text processed
+    for _ in range(len(texts)):
         callback()
     return embeddings_list
 
@@ -501,195 +497,194 @@ async def ai_embedding(
         embedding_type: AIEmbeddingType,
         *,
         num_ratelimit_retries: int = 10,
-        backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 5),
+        backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 60) + random.uniform(0, 1),
         callback: Callable[[], None] = lambda: None,
 ) -> list[list[float]]:
     if not texts:
         return []
-    text_embeddings: list[list[float] | None] = [None] * len(texts)
-    indices_to_fetch = []
+
+    valid_texts_with_original_indices: List[tuple[int, str]] = []
     for i, text in enumerate(texts):
-        if not text or not isinstance(text, str):  # Skip empty or invalid texts
-            logger.warning(f"Invalid or empty text at index {i} for embedding. Skipping.")
-            text_embeddings[i] = []  # Or handle as error; providing empty list to maintain structure
-            callback()
-            continue
-        cache_key = get_embeddings_cache_key(model, text, embedding_type)
+        if text and isinstance(text, str):
+            valid_texts_with_original_indices.append((i, text))
+        else:
+            logger.warning(f"Invalid or empty text at original index {i} for embedding. Skipping.")
+            # No placeholder needed in text_embeddings if we reconstruct later
+
+    if not valid_texts_with_original_indices:
+        return []  # No valid texts to process
+
+    # Prepare for fetching: map valid text index to its original index
+    text_embeddings_map: Dict[int, list[float] | None] = {orig_idx: None for orig_idx, _ in
+                                                          valid_texts_with_original_indices}
+    indices_to_fetch_map: Dict[int, int] = {}  # Maps new_idx (for required_texts) to original_idx
+    required_texts_list: List[str] = []
+
+    current_fetch_idx = 0
+    for original_idx, valid_text in valid_texts_with_original_indices:
+        cache_key = get_embeddings_cache_key(model, valid_text, embedding_type)
         cached_embedding = cache.get(cache_key)
         if cached_embedding is not None:
-            text_embeddings[i] = cached_embedding
+            text_embeddings_map[original_idx] = cached_embedding
             callback()
         else:
-            indices_to_fetch.append(i)
+            indices_to_fetch_map[current_fetch_idx] = original_idx
+            required_texts_list.append(valid_text)
+            current_fetch_idx += 1
 
-    if not indices_to_fetch:  # All texts were cached or invalid
-        # Filter out None placeholders for invalid texts if we used None instead of []
-        return [emb for emb in text_embeddings if emb is not None]  # type: ignore
-
-    required_texts = [texts[i] for i in indices_to_fetch]
+    if not required_texts_list:  # All valid texts were cached
+        final_result_from_cache = [None] * len(texts)
+        for orig_idx, emb in text_embeddings_map.items():
+            if emb is not None:
+                final_result_from_cache[orig_idx] = emb
+        return [e for e in final_result_from_cache if
+                e is not None and (isinstance(e, list) and len(e) > 0)]  # type: ignore
 
     # Batching for non-HF models if input exceeds max_batch_len
-    if model.company != 'huggingface' and len(required_texts) > model.max_batch_len:
+    if model.company != 'huggingface' and len(required_texts_list) > model.max_batch_len:
         tasks: list[Coroutine[Any, Any, list[list[float]]]] = []
-        for i in range(0, len(indices_to_fetch), model.max_batch_len):
-            current_batch_indices_to_fetch = indices_to_fetch[i: i + model.max_batch_len]
-            current_batch_texts = [texts[idx] for idx in current_batch_indices_to_fetch]
-            tasks.append(
-                ai_embedding(  # Recursive call for the smaller batch
-                    model,
-                    current_batch_texts,
-                    embedding_type,
-                    num_ratelimit_retries=num_ratelimit_retries,
-                    backoff_algo=backoff_algo,
-                    # Callback for this sub-batch will be handled internally by the recursive call
-                    # The main callback() is for the original texts.
-                )
+        # Create batches from required_texts_list and their corresponding original indices
+        # This part needs to map results back to the original text_embeddings_map structure
+
+        # Store results from sub-batches mapped by their index within required_texts_list
+        temp_batch_results: Dict[int, list[float]] = {}
+
+        async def process_sub_batch(sub_batch_texts: List[str], sub_batch_orig_indices_in_req_texts: List[int]):
+            sub_embeddings = await ai_embedding(  # Recursive call
+                model, sub_batch_texts, embedding_type,
+                num_ratelimit_retries=num_ratelimit_retries, backoff_algo=backoff_algo
+                # Callback is handled by the deepest call for non-cached items
             )
+            for i, emb in enumerate(sub_embeddings):
+                # map back to index in required_texts_list, not original overall index yet
+                temp_batch_results[sub_batch_orig_indices_in_req_texts[i]] = emb
 
-        # This callback logic for batched API calls is complex.
-        # The callback should ideally be invoked by the deepest ai_embedding call
-        # once an embedding is truly computed or fetched from cache.
-        # The current structure means callback() is called for cached items,
-        # and then the recursive calls will handle callbacks for their items.
-        # For simplicity, the provided callback is not passed down when batching for remote APIs here.
-        # The original callback will be called N times by _encode_local_huggingface for local.
+        sub_batch_tasks = []
+        for i in range(0, len(required_texts_list), model.max_batch_len):
+            batch_texts_for_api = required_texts_list[i: i + model.max_batch_len]
+            # These are indices *within* required_texts_list for this sub-batch
+            batch_indices_in_required_texts_list = list(range(i, i + len(batch_texts_for_api)))
+            sub_batch_tasks.append(process_sub_batch(batch_texts_for_api, batch_indices_in_required_texts_list))
 
-        preflattened_results = await asyncio.gather(*tasks)
-        results_for_current_batch: list[list[float]] = []
-        for embeddings_list in preflattened_results:
-            results_for_current_batch.extend(embeddings_list)
+        await asyncio.gather(*sub_batch_tasks)
 
-        if len(indices_to_fetch) != len(results_for_current_batch):  # Check length against original required texts
-            raise AIError(
-                f"Batch result length mismatch: expected {len(indices_to_fetch)}, got {len(results_for_current_batch)}")
+        # Populate text_embeddings_map using temp_batch_results and indices_to_fetch_map
+        for req_text_idx, embedding in temp_batch_results.items():
+            original_idx = indices_to_fetch_map[req_text_idx]
+            text_embeddings_map[original_idx] = embedding
+            cache_key = get_embeddings_cache_key(model, texts[original_idx], embedding_type)
+            cache.set(cache_key, embedding)
+            callback()  # Call callback now that it's processed and cached
 
-        for original_idx, embedding in zip(indices_to_fetch, results_for_current_batch):
-            text_embeddings[original_idx] = embedding
-            # Cache setting happens in the deepest call, no need to repeat here
-            # Also, the callback for these items was handled by the deeper call
+        # Reconstruct final list based on original `texts` length
+        final_result = [None] * len(texts)
+        for i, _ in enumerate(texts):
+            final_result[i] = text_embeddings_map.get(i)
+        return [e for e in final_result if e is not None and (isinstance(e, list) and len(e) > 0)]  # type: ignore
 
-        return [emb for emb in text_embeddings if emb is not None]  # type: ignore
-
-    embeddings_response: list[list[float]] | None = None
-    # num_tokens_input estimation needs to be done carefully for async context
-    # num_tokens_input = sum(ai_num_tokens(model, text) for text in required_texts) # This may cause issues
-    num_tokens_input = 1  # Placeholder, actual calculation should be careful with async context
-
-    ai_conn = await get_ai_connection()  # Get connection once for the current batch
+    # ---- Process a single batch (or the only batch if not exceeding max_batch_len) ----
+    embeddings_response_current_batch: list[list[float]] | None = None
+    ai_conn = await get_ai_connection()
 
     if model.company == 'huggingface':
-        # For HuggingFace, callback is passed to _encode_local_huggingface which calls it internally
-        embeddings_response = await asyncio.to_thread(
-            _encode_local_huggingface,
-            model.model,
-            required_texts,
-            embedding_type,
-            callback  # Pass the original callback
+        embeddings_response_current_batch = await asyncio.to_thread(
+            _encode_local_huggingface, model.model, required_texts_list, embedding_type, callback
         )
     elif model.company == "openai":
         for i_retry in range(num_ratelimit_retries):
             try:
-                async with AIConnection.openai_ratelimit_semaphore:
+                async with ai_conn.openai_semaphore_instance:  # Use instance semaphore
                     rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
                     tpm = model.ratelimit_tpm * RATE_LIMIT_RATIO
-                    # Estimate tokens for THIS batch (required_texts) if possible, else use placeholder
-                    current_batch_tokens = sum(ai_num_tokens(model, text) for text in required_texts)
+                    current_batch_tokens = sum(ai_num_tokens(model, text) for text in required_texts_list)
                     expected_wait = max(60.0 / rpm if rpm != float('inf') else 0,
                                         current_batch_tokens / (tpm / 60) if tpm > 0 else 0)
                     await asyncio.sleep(expected_wait)
                 response = await ai_conn.openai_client.embeddings.create(
-                    input=required_texts, model=model.model
+                    input=required_texts_list, model=model.model
                 )
-                embeddings_response = [embedding.embedding for embedding in response.data]
-                for _ in range(len(required_texts)): callback()  # Call callback for each processed text
-                break
-            except (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError) as e:
+                if response and response.data:
+                    embeddings_response_current_batch = [e.embedding for e in response.data]
+                    for _ in range(len(required_texts_list)):
+                        callback()
+                    break
+            except (RateLimitError, openai.APIConnectionError, openai.APITimeoutError) as e:
                 logger.warning(f"OpenAI Embedding Error: {e}")
                 if i_retry == num_ratelimit_retries - 1: raise AITimeoutError("Cannot overcome OpenAI Embedding Error")
-                async with AIConnection.openai_ratelimit_semaphore:
+                async with ai_conn.openai_semaphore_instance:
                     await asyncio.sleep(backoff_algo(i_retry))
     elif model.company == "cohere":
         for i_retry in range(num_ratelimit_retries):
             try:
-                async with AIConnection.cohere_ratelimit_semaphore:
+                async with ai_conn.cohere_semaphore_instance:  # Use instance semaphore
                     rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                    # current_batch_tokens = sum(ai_num_tokens(model, text) for text in required_texts) # Cohere doesn't use TPM for embeddings directly
                     expected_wait = (60.0 / rpm if rpm != float('inf') else 0)
                     await asyncio.sleep(expected_wait)
                 result = await ai_conn.cohere_client.embed(
-                    texts=required_texts, model=model.model,
+                    texts=required_texts_list, model=model.model,
                     input_type="search_document" if embedding_type == AIEmbeddingType.DOCUMENT else "search_query"
                 )
-                embeddings_response = cast(List[List[float]], result.embeddings)
-                for _ in range(len(required_texts)): callback()
+                embeddings_response_current_batch = cast(List[List[float]], result.embeddings)
+                for _ in range(len(required_texts_list)): callback()
                 break
             except (cohere.errors.TooManyRequestsError, httpx.RemoteProtocolError, httpx.ReadTimeout) as e:
                 logger.warning(f"Cohere Embedding Error: {e}")
                 if i_retry == num_ratelimit_retries - 1: raise AITimeoutError("Cannot overcome Cohere Embedding Error")
-                async with AIConnection.cohere_ratelimit_semaphore:
+                async with ai_conn.cohere_semaphore_instance:
                     await asyncio.sleep(backoff_algo(i_retry))
     elif model.company == "voyageai":
         for i_retry in range(num_ratelimit_retries):
             try:
-                async with AIConnection.voyageai_ratelimit_semaphore:
+                async with ai_conn.voyageai_semaphore_instance:  # Use instance semaphore
                     rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                    # current_batch_tokens = sum(ai_num_tokens(model, text) for text in required_texts)
                     expected_wait = (60.0 / rpm if rpm != float('inf') else 0)
                     await asyncio.sleep(expected_wait)
                 result = await ai_conn.voyageai_client.embed(
-                    required_texts, model=model.model,  # Use model.model here
+                    required_texts_list, model=model.model,
                     input_type="document" if embedding_type == AIEmbeddingType.DOCUMENT else "query"
                 )
-                embeddings_response = cast(List[List[float]], result.embeddings)
-                for _ in range(len(required_texts)): callback()
+                embeddings_response_current_batch = cast(List[List[float]], result.embeddings)
+                for _ in range(len(required_texts_list)): callback()
                 break
-            except voyageai.error.RateLimitError as e:  # Use the specific error type
+            except voyageai.error.RateLimitError as e:
                 logger.warning(f"VoyageAI Embedding Error: {e}")
                 if i_retry == num_ratelimit_retries - 1: raise AITimeoutError(
                     "Cannot overcome VoyageAI Embedding Error")
-                async with AIConnection.voyageai_ratelimit_semaphore:
+                async with ai_conn.voyageai_semaphore_instance:
                     await asyncio.sleep(backoff_algo(i_retry))
 
-    if embeddings_response is None:
-        raise AITimeoutError(
-            f"Failed to get embeddings for model {model.model} after retries for {len(required_texts)} texts.")
+    if embeddings_response_current_batch is None:
+        raise AITimeoutError(f"Failed to get embeddings for model {model.model} (batch part).")
 
-    if len(embeddings_response) != len(required_texts):  # Check against required_texts for this specific call
+    if len(embeddings_response_current_batch) != len(required_texts_list):
         raise AIError(
-            f"Mismatch between requested ({len(required_texts)}) and received ({len(embeddings_response)}) embeddings in non-batched/final batch part.")
+            f"Mismatch in embeddings for required_texts_list: got {len(embeddings_response_current_batch)}, expected {len(required_texts_list)}")
 
-    for original_idx, embedding in zip(indices_to_fetch, embeddings_response):
+    for i, embedding in enumerate(embeddings_response_current_batch):
+        original_idx = indices_to_fetch_map[i]  # Map back to original index in `texts`
+        text_embeddings_map[original_idx] = embedding
         cache_key = get_embeddings_cache_key(model, texts[original_idx], embedding_type)
         cache.set(cache_key, embedding)
-        text_embeddings[original_idx] = embedding
+        # Callback was already called for HF, or for each text in API success block.
 
-    # Final check and filtering of None values (e.g. from initial skip of invalid prompts)
-    final_embeddings = [emb for emb in text_embeddings if emb is not None and (isinstance(emb, list) and len(emb) > 0)]
-    if len(final_embeddings) != len(
-            [txt for txt in texts if txt and isinstance(txt, str)]):  # Compare to valid input texts
-        logger.warning(
-            f"Length mismatch after processing all embeddings. Input valid texts: {len([txt for txt in texts if txt and isinstance(txt, str)])}, Output embeddings: {len(final_embeddings)}")
-        # This part needs careful handling if some prompts were skipped initially.
-        # The expectation is that text_embeddings has placeholders for skipped ones.
+    # Reconstruct final list based on original `texts` length
+    final_result = [None] * len(texts)
+    for i, _ in enumerate(texts):
+        final_result[i] = text_embeddings_map.get(i)  # Get from map which includes cached and newly fetched
 
-    return cast(list[list[float]], final_embeddings)  # Return only successfully processed embeddings
+    return [e for e in final_result if e is not None and (isinstance(e, list) and len(e) > 0)]  # type: ignore
 
 
 def get_rerank_cache_key(
         model: AIRerankModel, query: str, texts: list[str]
 ) -> str:
     md5_hasher = hashlib.md5()
-    md5_hasher.update(model.model_dump_json().encode())  # Cache based on model config
-    md5_hasher.update(query.encode())
-    # Sort texts before hashing to ensure cache key is consistent regardless of input order
-    # This is important if the order of `texts` to `ai_rerank` might vary for the same logical set.
-    # However, reranking IS order-dependent for its results (indices refer to original list).
-    # So, hashing on ordered texts is correct.
-    for text in texts:  # Hash based on content of texts
-        md5_hasher.update(text.encode())  # More direct hash of content
+    md5_hasher.update(model.model_dump_json().encode())
+    md5_hasher.update(query.encode('utf-8', 'replace'))
+    for text in texts:
+        md5_hasher.update(text.encode('utf-8', 'replace'))
     texts_hash = md5_hasher.hexdigest()
-    # Include query in the key name more explicitly
-    key = f"rerank|||{model.company}|||{model.model}|||query_hash_{hashlib.md5(query.encode()).hexdigest()}|||texts_hash_{texts_hash}"
+    key = f"rerank_v2|||{model.company}|||{model.model}|||q_hash_{hashlib.md5(query.encode('utf-8', 'replace')).hexdigest()}|||texts_hash_{texts_hash}"
     return key
 
 
@@ -697,43 +692,41 @@ def _rerank_local_huggingface(
         model_name: str,
         query: str,
         texts: list[str],
-        trust_remote_code: bool = True  # Added trust_remote_code
+        trust_remote_code: bool = True
 ) -> list[int]:
     if CrossEncoder is None:
-        raise ImportError(
-            "CrossEncoder (part of sentence-transformers) is not installed. Run `pip install sentence-transformers`.")
+        raise ImportError("CrossEncoder not installed.")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if model_name not in local_reranker_cache:
         logger.info(f"Loading local CrossEncoder model: {model_name} onto device: {device}")
         try:
             local_reranker_cache[model_name] = CrossEncoder(
-                model_name,
-                trust_remote_code=trust_remote_code,  # Pass this along
-                device=device
+                model_name, trust_remote_code=trust_remote_code, device=device
             )
             logger.info(f"Finished loading {model_name}")
         except Exception as e:
-            logger.error(f"HuggingFace Reranker: Failed to load model {model_name} onto device {device}: {e}")
-            raise RuntimeError(f"Failed to load CrossEncoder model {model_name}") from e
+            logger.error(f"HF Reranker: Load failed for {model_name}: {e}")
+            raise RuntimeError(f"Failed to load CrossEncoder {model_name}") from e
 
-    model_instance: CrossEncoder = local_reranker_cache[model_name]  # Renamed
+    model_instance: CrossEncoder = local_reranker_cache[model_name]
     input_pairs = [(query, text) for text in texts]
 
-    logger.debug(f"Reranking {len(input_pairs)} pairs locally using {model_name}...")
-    scores = model_instance.predict(  # Use model_instance
-        input_pairs,
-        show_progress_bar=False,  # Typically false
-        batch_size=8 if "large" in model_name.lower() else 32  # Heuristic for batch size
-    )
+    logger.debug(f"Reranking {len(input_pairs)} pairs locally with {model_name}...")
+    try:
+        scores = model_instance.predict(
+            input_pairs, show_progress_bar=False,
+            batch_size=8 if "large" in model_name.lower() else 32
+        )
+    except Exception as e:
+        logger.error(f"Error during CrossEncoder predict for {model_name}: {e}")
+        return list(range(len(texts)))  # Fallback to original order on error
+
     logger.debug(f"Finished local reranking with {model_name}.")
 
-    # scores can be a list or numpy array
     indexed_scores = list(enumerate(scores))
-    # Sort by score in descending order, then by original index for stability if scores are equal
     sorted_indices_scores = sorted(indexed_scores, key=lambda item: (item[1], -item[0]), reverse=True)
-    reranked_indices = [index for index, score in sorted_indices_scores]
-    return reranked_indices
+    return [index for index, score in sorted_indices_scores]
 
 
 async def ai_rerank(
@@ -748,16 +741,13 @@ async def ai_rerank(
     if not texts:
         return []
 
-    # Ensure texts for reranking are not excessively long, as some rerankers have limits
-    # This is a basic truncation, more sophisticated handling might be needed.
-    # Cohere rerank has a limit of 510 tokens per document.
-    MAX_TEXT_LEN_FOR_RERANK = 4000  # Approx 1000 tokens, adjust as needed
+    MAX_TEXT_LEN_FOR_RERANK = 4000
     processed_texts = [text[:MAX_TEXT_LEN_FOR_RERANK] if len(text) > MAX_TEXT_LEN_FOR_RERANK else text for text in
                        texts]
     if any(len(t) > MAX_TEXT_LEN_FOR_RERANK for t in texts):
-        logger.warning(f"Some texts provided to ai_rerank were truncated to {MAX_TEXT_LEN_FOR_RERANK} chars.")
+        logger.warning(f"Some texts for ai_rerank truncated to {MAX_TEXT_LEN_FOR_RERANK} chars.")
 
-    cache_key = get_rerank_cache_key(model, query, processed_texts)  # Use processed_texts for cache key
+    cache_key = get_rerank_cache_key(model, query, processed_texts)
     cached_full_reranking = cache.get(cache_key)
     full_reranked_indices: list[int] | None = None
 
@@ -766,93 +756,81 @@ async def ai_rerank(
         full_reranked_indices = cached_full_reranking
     else:
         logger.debug(f"Cache miss for rerank key: {cache_key[:30]}... Calculating for {len(processed_texts)} texts.")
-        ai_conn = await get_ai_connection()  # Get connection once
+        ai_conn = await get_ai_connection()
 
         if model.company == "huggingface":
             try:
                 full_reranked_indices = await asyncio.to_thread(
-                    _rerank_local_huggingface,
-                    model.model,
-                    query,
-                    processed_texts,  # Use processed texts
+                    _rerank_local_huggingface, model.model, query, processed_texts
                 )
             except Exception as e:
                 logger.error(f"HuggingFace Rerank Error ({model.model}): {e}")
-                full_reranked_indices = list(range(len(processed_texts)))  # Fallback to original order
+                full_reranked_indices = list(range(len(processed_texts)))
         elif model.company == "cohere":
             for i_retry in range(num_ratelimit_retries):
                 try:
-                    async with AIConnection.cohere_ratelimit_semaphore:
+                    async with ai_conn.cohere_semaphore_instance:  # Use instance semaphore
                         rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
                         await asyncio.sleep(60.0 / rpm if rpm > 0 else 0)
-                    # Cohere rerank expects 'documents' to be list of str or list of dicts with 'text' key
-                    docs_for_cohere = [{"text": t} for t in processed_texts] if isinstance(processed_texts[0],
-                                                                                           str) else processed_texts
 
+                    docs_for_cohere = [{"text": t} for t in processed_texts]  # No more isinstance check needed
                     response = await ai_conn.cohere_client.rerank(
                         model=model.model, query=query, documents=docs_for_cohere,  # type: ignore
-                        top_n=len(processed_texts),  # Get scores for all to cache full ranking
+                        top_n=len(processed_texts),
                     )
                     full_reranked_indices = [result.index for result in response.results]
                     break
                 except (cohere.errors.TooManyRequestsError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
                     logger.warning(f"Cohere Rerank Error: {e}")
                     if i_retry == num_ratelimit_retries - 1:
-                        # Fallback to original order if all retries fail
-                        logger.error("Max retries reached for Cohere Rerank. Falling back to original order.")
+                        logger.error("Max retries for Cohere Rerank. Fallback to original order.")
                         full_reranked_indices = list(range(len(processed_texts)))
-                        break  # Break from retry loop
-                    async with AIConnection.cohere_ratelimit_semaphore:
+                        break
+                    async with ai_conn.cohere_semaphore_instance:
                         await asyncio.sleep(backoff_algo(i_retry))
-            if full_reranked_indices is None:  # Should be set by fallback if error
-                full_reranked_indices = list(range(len(processed_texts)))
+            if full_reranked_indices is None: full_reranked_indices = list(range(len(processed_texts)))
         elif model.company == "voyageai":
             for i_retry in range(num_ratelimit_retries):
                 try:
-                    async with AIConnection.voyageai_ratelimit_semaphore:
+                    async with ai_conn.voyageai_semaphore_instance:  # Use instance semaphore
                         rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
                         await asyncio.sleep(60.0 / rpm if rpm > 0 else 0)
                     voyageai_response = await ai_conn.voyageai_client.rerank(
-                        query=query, documents=processed_texts, model=model.model,  # Use model.model
-                        top_k=len(processed_texts),  # Get scores for all
+                        query=query, documents=processed_texts, model=model.model,
+                        top_k=len(processed_texts),
                     )
                     full_reranked_indices = [int(result.index) for result in voyageai_response.results]
                     break
-                except voyageai.error.RateLimitError as e:  # Specific error
+                except voyageai.error.RateLimitError as e:
                     logger.warning(f"VoyageAI Rerank Error: {e}")
                     if i_retry == num_ratelimit_retries - 1:
-                        logger.error("Max retries reached for VoyageAI Rerank. Falling back to original order.")
+                        logger.error("Max retries for VoyageAI Rerank. Fallback to original order.")
                         full_reranked_indices = list(range(len(processed_texts)))
                         break
-                    async with AIConnection.voyageai_ratelimit_semaphore:
+                    async with ai_conn.voyageai_semaphore_instance:
                         await asyncio.sleep(backoff_algo(i_retry))
-            if full_reranked_indices is None:
-                full_reranked_indices = list(range(len(processed_texts)))
+            if full_reranked_indices is None: full_reranked_indices = list(range(len(processed_texts)))
 
-        if full_reranked_indices is None:  # Should not happen if fallbacks are in place
-            logger.error(
-                f"Full reranking failed and no fallback for model {model.company}/{model.model}. Returning original order.")
+        if full_reranked_indices is None:
+            logger.error(f"Reranking failed. Fallback to original order for {model.company}/{model.model}.")
             full_reranked_indices = list(range(len(processed_texts)))
 
         cache.set(cache_key, full_reranked_indices)
         logger.debug(f"Cached full rerank list for key: {cache_key[:30]}...")
 
     final_indices = full_reranked_indices
-    if top_k is not None:  # Apply top_k if specified
-        top_k = min(top_k, len(final_indices))  # Ensure top_k is not out of bounds
-        if top_k > 0:
+    if top_k is not None:
+        top_k = min(top_k, len(final_indices))
+        if top_k >= 0:  # Allow top_k=0 to return empty list
             final_indices = final_indices[:top_k]
-        elif top_k == 0:  # If top_k is 0, return empty list
-            final_indices = []
-        # If top_k is negative, it implies no truncation, which is already handled.
-
+        # If top_k is negative, implies no truncation from the full list.
     return final_indices
 
 
 # --- New Summarization Functions ---
 def get_document_summary_cache_key(
         document_file_path: str,
-        document_content_hash: str,  # Hash of the full document content
+        document_content_hash: str,
         summarization_model: AIModel,
         summary_prompt_template_hash: str
 ) -> str:
@@ -867,23 +845,18 @@ async def generate_document_summary(
         prompt_target_char_length: int,
         truncate_char_length: int,
         summaries_output_dir_base: str,
-        num_ratelimit_retries: int = 5,  # Consistent with other AI calls
+        num_ratelimit_retries: int = 5,
         backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 5)
 ) -> str:
-    if summarization_model.company != "openai":  # Enforce OpenAI for now based on ai_call current state
-        logger.error(
-            f"Summarization currently only robustly supports OpenAI models via ai_call. Requested: {summarization_model.company} for {document_file_path}. Using fallback.")
-        # Fallback to first N characters of the original document content
+    if summarization_model.company != "openai":
+        logger.error(f"Summarization only supports OpenAI. Requested: {summarization_model.company}. Fallback.")
         return document_content[:truncate_char_length].strip()
 
-    doc_content_hash = hashlib.md5(document_content.encode('utf-8', 'replace')).hexdigest()  # Ensure encoding
+    doc_content_hash = hashlib.md5(document_content.encode('utf-8', 'replace')).hexdigest()
     prompt_template_hash = hashlib.md5(summary_prompt_template.encode('utf-8', 'replace')).hexdigest()
 
     cache_key = get_document_summary_cache_key(
-        document_file_path,
-        doc_content_hash,
-        summarization_model,
-        prompt_template_hash
+        document_file_path, doc_content_hash, summarization_model, prompt_template_hash
     )
 
     cached_summary = cache.get(cache_key)
@@ -891,76 +864,58 @@ async def generate_document_summary(
         logger.debug(f"Cache hit for summary: {document_file_path}")
         return cast(str, cached_summary)
 
-    logger.info(f"Cache miss for summary. Generating for: {document_file_path} using {summarization_model.model}")
+    logger.info(f"Cache miss for summary. Generating for: {document_file_path} with {summarization_model.model}")
 
-    llm_max_output_tokens = (truncate_char_length // 3) + 50  # More generous buffer
+    llm_max_output_tokens = (truncate_char_length // 3) + 50
 
     try:
-        # Ensure the template can handle these keys or adjust placeholder names
         final_prompt_content = summary_prompt_template.format(
-            document_content=document_content,  # Pass the full document content
-            target_char_length=prompt_target_char_length
+            document_content=document_content, target_char_length=prompt_target_char_length
         )
     except KeyError as e:
-        logger.error(f"Invalid placeholder in summary_prompt_template: {e}. Document: {document_file_path}")
-        # Fallback to simpler prompt if template fails
-        final_prompt_content = f"Summarize this document to about {prompt_target_char_length} characters: {document_content}"
+        logger.error(
+            f"Invalid placeholder in summary_prompt_template: {e} for {document_file_path}. Using basic prompt.")
+        final_prompt_content = f"Summarize this to about {prompt_target_char_length} chars: {document_content}"
 
-    # Assuming the prompt template might already include system/user roles.
-    # If not, structure messages accordingly.
-    # Based on user's example template, it's a single block of text with implicit roles.
-    # For OpenAI, it's best to use explicit roles.
     messages_for_llm = [
         AIMessage(role="system",
-                  content="You are an expert legal document summarizer. Your goal is to provide a concise summary (around the target character length provided) focusing on key entities, purpose, and legal topics. This summary will be used to give context to smaller text chunks from the document. Output only the summary text itself."),
+                  content="You are an expert legal document summarizer... Output only the summary text."),  # Shortened
         AIMessage(role="user", content=final_prompt_content)
     ]
 
     summary_text: str
     try:
         summary_text = await ai_call(
-            model=summarization_model,
-            messages=messages_for_llm,
-            max_tokens=llm_max_output_tokens,
-            temperature=0.2,  # Low temperature for factual summary
-            num_ratelimit_retries=num_ratelimit_retries,
-            backoff_algo=backoff_algo
+            model=summarization_model, messages=messages_for_llm, max_tokens=llm_max_output_tokens,
+            temperature=0.2, num_ratelimit_retries=num_ratelimit_retries, backoff_algo=backoff_algo
         )
     except Exception as e:
-        logger.warning(
-            f"LLM summarization failed for {document_file_path}: {e}. Using fallback (first {truncate_char_length} chars of original).")
-        summary_text = document_content[:truncate_char_length].strip()  # Fallback to original content
+        logger.warning(f"LLM summarization failed for {document_file_path}: {e}. Fallback.")
+        summary_text = document_content[:truncate_char_length].strip()
 
-    # Truncate if summary is longer than allowed (even after LLM's attempt)
     if len(summary_text) > truncate_char_length:
-        summary_text = summary_text[:truncate_char_length].strip()  # Ensure no leading/trailing spaces after truncate
-        logger.debug(f"Summary for {document_file_path} was hard-truncated to {truncate_char_length} characters.")
+        summary_text = summary_text[:truncate_char_length].strip()
+        logger.debug(f"Summary for {document_file_path} hard-truncated to {truncate_char_length} chars.")
 
-    if not summary_text.strip() and document_content.strip():  # If summary is empty but doc was not
-        logger.warning(
-            f"Generated summary for {document_file_path} is empty. Using fallback (first {truncate_char_length} chars of original).")
+    if not summary_text.strip() and document_content.strip():
+        logger.warning(f"Empty summary for {document_file_path}. Fallback.")
         summary_text = document_content[:truncate_char_length].strip()
 
     cache.set(cache_key, summary_text)
-    logger.info(f"Generated and cached summary for: {document_file_path} (len: {len(summary_text)})")
+    logger.info(f"Generated/cached summary for: {document_file_path} (len: {len(summary_text)})")
 
     try:
-        # Assumes document_file_path is like "dataset_name/actual_filename.txt"
         path_parts = os.path.normpath(document_file_path).split(os.sep)
-        dataset_name = path_parts[0] if len(path_parts) > 1 else "unknown_dataset"
-
+        dataset_name = path_parts[0] if len(path_parts) > 0 else "unknown_dataset"
         summary_file_dir = os.path.join(summaries_output_dir_base, dataset_name)
         os.makedirs(summary_file_dir, exist_ok=True)
-
         original_filename_base = os.path.basename(document_file_path)
-        # Replace original extension with .summary.txt or append .summary.txt
         summary_filename_txt = os.path.join(summary_file_dir,
                                             f"{os.path.splitext(original_filename_base)[0]}.summary.txt")
-
         with open(summary_filename_txt, 'w', encoding='utf-8') as f:
             f.write(summary_text)
-        logger.debug(f"Summary for {document_file_path} also saved to {summary_filename_txt}")
+        logger.debug(f"Summary for {document_file_path} saved to {summary_filename_txt}")
     except Exception as e:
-        logger.error(f"Failed to save summary text file for {document_file_path}: {e}")
+        logger.error(f"Failed to save summary file for {document_file_path}: {e}")
 
     return summary_text
