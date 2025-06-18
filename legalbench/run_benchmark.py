@@ -424,7 +424,7 @@ if __name__ == "__main__":
                         help="Maximum new tokens for LLM generation.")  # Increased default
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for local LLM inference.")
 
-    parser.add_argument("--retrieval_strategy", "-r", type=str, default="s-rcts_oai3L_X",  # Defaulting to your example
+    parser.add_argument("--retrieval_strategy", "-r", type=str, default="s-rcts_oai3S_X", choices=["s-rcts_oai3S_X", "rcts_oai3S_X", "X"],
                         help="Name of the retrieval strategy (from retrieval.py configs, or 'X' for no retrieval).")
     parser.add_argument("--final_top_k", type=int, nargs='+', default=[4],
                         help="Number of top retrieved snippets to use for context (can be multiple values for multiple runs)."

@@ -28,7 +28,7 @@ Answer:
 # Define your retrieval strategy configurations here
 # This dictionary maps a string name (from args.retrieval_strategy) to a full Pydantic model config
 RETRIEVAL_STRATEGY_CONFIGS = {
-    "s-rcts_oai3L_X": BaselineStrategyType(
+    "s-rcts_oai3S_X": BaselineStrategyType(
         chunking_strategy=ChunkingStrategy(
             strategy_name="summary_rcts",
             chunk_size=500,
@@ -45,7 +45,7 @@ RETRIEVAL_STRATEGY_CONFIGS = {
         token_limit=None  # No specific token limit on retrieved content length for now
     ),
     # Example for a non-summary baseline strategy (if you define one later)
-    "rcts_oai3L_X": BaselineStrategyType(
+    "rcts_oai3S_X": BaselineStrategyType(
         chunking_strategy=ChunkingStrategy(
             strategy_name="rcts",
             chunk_size=500,
