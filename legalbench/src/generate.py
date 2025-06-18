@@ -16,26 +16,27 @@ import cohere
 DEFAULT_CONCURRENCY_LIMIT = 1  # Set this to one to avoid errors for now
 
 
-def clean_response(response: str | None) -> str:
+def clean_response(response: str | None, y_true: list[str]) -> str:
     """
-    Cleans the LLM response to extract only "Yes" or "No".
+    Cleans the LLM response to extract the correct label from y_true.
 
     Parameters:
         response (str | None): The raw response from the LLM.
+        y_true (list[str]): List of valid class labels, e.g., ["Yes", "No"].
 
     Returns:
-        str: "Yes" or "No" if found, otherwise an empty string.
+        str: Matching y_true label if found, otherwise an empty string.
     """
     if not response:
         return ""
 
-    # Normalize and remove leading tags like "Answer:", "Label:", etc.
-    response = response.strip().lower()
+    response_clean = response.strip().lower()
+    y_true_lower = [label.lower() for label in y_true]
 
-    # Look for 'yes' or 'no' at the beginning or inside the sentence
-    match = re.search(r'\b(yes|no)\b', response)  # TODO: Answers might be other than Yes/No -> make it variable!
-    if match:
-        return match.group(1).capitalize()
+    for i, label in enumerate(y_true_lower):
+        # Look for label as a whole word
+        if re.search(rf'\b{re.escape(label)}\b', response_clean):
+            return y_true[i]  # Return label with original casing
 
     return ""
 
@@ -48,7 +49,7 @@ class BaseGenerator(ABC):
         self.max_new_tokens = kwargs.get("max_new_tokens", 256)
 
     @abstractmethod
-    async def generate(self, prompts: list[str], **generation_kwargs) -> list[str]:
+    async def generate(self, prompts: list[str], y_labels: list[str], **generation_kwargs) -> list[str]:
         pass
 
 
@@ -70,7 +71,7 @@ class APIGenerator(BaseGenerator, ABC):
         """Each API-specific generator must implement this."""
         pass
 
-    async def generate(self, prompts: list[str], **generation_kwargs) -> list[str]:
+    async def generate(self, prompts: list[str], y_labels: list[str], **generation_kwargs) -> list[str]:
         temperature = generation_kwargs.get("temperature", self.temperature)
         max_new_tokens = generation_kwargs.get("max_new_tokens", self.max_new_tokens)
         semaphore = asyncio.Semaphore(self.concurrency_limit)
@@ -90,7 +91,7 @@ class APIGenerator(BaseGenerator, ABC):
         final_results = []
         for i, res in enumerate(results):
             # Clean the response
-            cleaned_res = clean_response(res)
+            cleaned_res = clean_response(res, y_labels)
             if cleaned_res is None:
                 final_results.append(f"ERROR: No response for prompt {i}")
             else:
@@ -199,7 +200,7 @@ class LlamaLocalGenerator(LocalGenerator):
             print(f"Error initializing LlamaLocalGenerator for {model_name}: {e}")
             raise  # Re-raise exception to signal failure to initialize
 
-    async def generate(self, prompts: list[str], **generation_kwargs) -> list[str]:
+    async def generate(self, prompts: list[str], y_labels: list[str], **generation_kwargs) -> list[str]:
         temperature = generation_kwargs.get("temperature", self.temperature)
         max_new_tokens = generation_kwargs.get("max_new_tokens", self.max_new_tokens)
 
@@ -255,7 +256,7 @@ class LlamaLocalGenerator(LocalGenerator):
                 if len(output_ids) > prompt_length:
                     newly_generated_ids = output_ids[prompt_length:]
                     decoded_text = self.tokenizer.decode(newly_generated_ids, skip_special_tokens=True).strip()
-                    res = clean_response(decoded_text or None)
+                    res = clean_response(decoded_text or None, y_labels)
                     batch_results.append(res)
                 else:
                     # Nothing new was generated, or generation was shorter than expected (e.g., only EOS)

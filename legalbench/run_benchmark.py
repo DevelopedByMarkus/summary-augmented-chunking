@@ -322,7 +322,8 @@ async def main(args):
                     "temperature": args.temperature,
                     "max_new_tokens": args.max_new_tokens,
                 }
-                generations = await llm_generator.generate(prompts_to_send_to_llm, **generation_kwargs_llm)
+                gold_answers = test_df["answer"].tolist()
+                generations = await llm_generator.generate(prompts_to_send_to_llm, gold_answers, **generation_kwargs_llm)
 
                 if len(generations) != len(prompts_to_send_to_llm):
                     print(
@@ -330,8 +331,6 @@ async def main(args):
                     all_tasks_results_summary[task_result_key] = {
                         "error": "Mismatch in generations and prompts length after RAG"}
                     continue
-
-                gold_answers = test_df["answer"].tolist()
 
                 if args.verbose:
                     write_verbose_output(
