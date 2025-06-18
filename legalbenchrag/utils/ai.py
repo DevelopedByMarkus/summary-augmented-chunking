@@ -925,8 +925,6 @@ async def generate_document_summary(
         sanitized_file_name = sanitize_filename(doc_file_name)
         summary_filename_txt = os.path.join(summary_file_dir,
                                             f"{sanitized_file_name}_summary.txt")
-        print("document_file_path:", document_file_path)
-        print("summary_filename_txt:", summary_filename_txt)
         with open(summary_filename_txt, 'w', encoding='utf-8') as f:
             f.write(summary_text)
         logger.debug(f"Summary for {document_file_path} saved to {summary_filename_txt}")

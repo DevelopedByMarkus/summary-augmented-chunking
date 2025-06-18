@@ -20,10 +20,21 @@ from legalbenchrag.utils.credentials import credentials
 
 
 async def main(args):
+    # --- Logging Configuration ---
+    # Set the logging level based on the verbose flag.
+    log_level = logging.INFO if args.verbose else logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    # Suppress overly verbose third-party loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("datasets").setLevel(logging.WARNING)
+    logging.getLogger("pysqlite_vec").setLevel(logging.WARNING)
+    logging.getLogger("bm25s").setLevel(logging.WARNING)
+
     start_time = datetime.now()
     print(f"Starting ALQA benchmark run at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-
-    # logging.basicConfig(level=logging.ERROR)
 
     # --- Setup: Load data and models ---
     if args.verbose:
@@ -33,9 +44,11 @@ async def main(args):
     os.environ["OPENAI_API_KEY"] = credentials.ai.openai_api_key.get_secret_value()
     os.environ["COHERE_API_KEY"] = credentials.ai.cohere_api_key.get_secret_value()
 
+    # corpus_docs = load_alqa_corpus("./data/corpus/alqa/alqa_corpus_gt_only.jsonl")
     corpus_docs = load_alqa_corpus("./data/corpus/alqa/open_australian_legal_corpus_first3.jsonl")
     corpus_map = {doc.file_path: doc.content for doc in corpus_docs}
 
+    # test_items, updated_corpus_map = load_alqa_test_set("./data/benchmarks/open_australian_legal_qa_full.jsonl", corpus_map)
     test_items, updated_corpus_map = load_alqa_test_set("./data/benchmarks/open_australian_legal_qa_first3.jsonl", corpus_map)
 
     # If the corpus_map was updated, regenerate the list of Document objects for ingestion
