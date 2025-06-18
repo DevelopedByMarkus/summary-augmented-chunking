@@ -22,13 +22,17 @@ def clean_response(response: str | None, y_true: list[str]) -> str:
 
     Parameters:
         response (str | None): The raw response from the LLM.
-        y_true (list[str]): List of valid class labels, e.g., ["Yes", "No"].
+        y_true (list[str]): List of valid class labels, e.g., ["Yes", "No"]. If empty list is given then just return response.
 
     Returns:
         str: Matching y_true label if found, otherwise an empty string.
     """
     if not response:
+        print("Response was None!")
         return ""
+
+    if y_true == []:
+        return response
 
     response_clean = response.strip().lower()
     y_true_lower = [label.lower() for label in y_true]
@@ -38,6 +42,7 @@ def clean_response(response: str | None, y_true: list[str]) -> str:
         if re.search(rf'\b{re.escape(label)}\b', response_clean):
             return y_true[i]  # Return label with original casing
 
+    print("No answer was found in the response: ", response, " for labels: ", y_true, " Skipping ...")
     return ""
 
 

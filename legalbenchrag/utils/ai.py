@@ -7,6 +7,7 @@ import random
 from collections.abc import Callable, Coroutine
 from enum import Enum
 from typing import Any, Literal, cast, Dict, List
+import re
 
 import anthropic
 import cohere
@@ -30,6 +31,16 @@ logger = logging.getLogger(__name__)
 # --- Globals ---
 local_model_cache: Dict[str, Any] = {}
 local_reranker_cache: Dict[str, Any] = {}
+
+
+# Define characters typically illegal in Windows filenames and replacement
+ILLEGAL_FILENAME_CHARS = r'[\\/:*?"<>|]'
+REPLACEMENT_CHAR = '_'
+
+
+def sanitize_filename(filename: str) -> str:
+    """Replaces characters illegal in Windows filenames with underscores."""
+    return re.sub(ILLEGAL_FILENAME_CHARS, REPLACEMENT_CHAR, filename)
 
 
 # AI Types
@@ -909,9 +920,13 @@ async def generate_document_summary(
         dataset_name = path_parts[0] if len(path_parts) > 0 else "unknown_dataset"
         summary_file_dir = os.path.join(summaries_output_dir_base, dataset_name)
         os.makedirs(summary_file_dir, exist_ok=True)
-        original_filename_base = os.path.basename(document_file_path)
+        original_filename_base = os.path.relpath(document_file_path, dataset_name)
+        doc_file_name = os.path.splitext(original_filename_base)[0]
+        sanitized_file_name = sanitize_filename(doc_file_name)
         summary_filename_txt = os.path.join(summary_file_dir,
-                                            f"{os.path.splitext(original_filename_base)[0]}.summary.txt")
+                                            f"{sanitized_file_name}_summary.txt")
+        print("document_file_path:", document_file_path)
+        print("summary_filename_txt:", summary_filename_txt)
         with open(summary_filename_txt, 'w', encoding='utf-8') as f:
             f.write(summary_text)
         logger.debug(f"Summary for {document_file_path} saved to {summary_filename_txt}")

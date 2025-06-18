@@ -7,6 +7,7 @@ __pycache__
 *.jpg
 *.pdf
 *.json
+*.jsonl
 *.csv
 *.txt
 
@@ -20,6 +21,7 @@ benchmark_results
 plots
 legalbench/output
 legalbench/results
+alqa/data
 
 # TODO: Think about .egg-info at a later time
 LegalBenchRAG.egg-info
