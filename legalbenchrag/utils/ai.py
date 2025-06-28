@@ -324,7 +324,7 @@ async def ai_call(
         anthropic_initial_message: str | None = "<START>",
         anthropic_combine_delimiter: str = "\n",
         num_ratelimit_retries: int = 10,
-        backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 5),
+        backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 60) + random.uniform(0, 1),
 ) -> str:
     cache_key = get_call_cache_key(model, messages)
     cached_call = cache.get(cache_key)
@@ -857,7 +857,7 @@ async def generate_document_summary(
         truncate_char_length: int,
         summaries_output_dir_base: str,
         num_ratelimit_retries: int = 5,
-        backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 5)
+        backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 60) + random.uniform(0, 1)
 ) -> str:
     if summarization_model.company != "openai":
         logger.error(f"Summarization only supports OpenAI. Requested: {summarization_model.company}. Fallback.")
@@ -876,6 +876,7 @@ async def generate_document_summary(
         return cast(str, cached_summary)
 
     logger.info(f"Cache miss for summary. Generating for: {document_file_path} with {summarization_model.model}")
+    cache_summary = True
 
     llm_max_output_tokens = (truncate_char_length // 3) + 50
 
@@ -887,6 +888,7 @@ async def generate_document_summary(
         logger.error(
             f"Invalid placeholder in summary_prompt_template: {e} for {document_file_path}. Using basic prompt.")
         final_prompt_content = f"Summarize this to about {prompt_target_char_length} chars: {document_content}"
+        cache_summary = False  # Don't cache if template is invalid
 
     messages_for_llm = [
         AIMessage(role="system",
@@ -903,16 +905,21 @@ async def generate_document_summary(
     except Exception as e:
         logger.warning(f"LLM summarization failed for {document_file_path}: {e}. Fallback.")
         summary_text = document_content[:truncate_char_length].strip()
+        cache_summary = False  # Don't cache if summarization failed
 
     if len(summary_text) > truncate_char_length:
         summary_text = summary_text[:truncate_char_length].strip()
         logger.debug(f"Summary for {document_file_path} hard-truncated to {truncate_char_length} chars.")
+        cache_summary = False  # Don't cache if we had to truncate
 
     if not summary_text.strip() and document_content.strip():
         logger.warning(f"Empty summary for {document_file_path}. Fallback.")
         summary_text = document_content[:truncate_char_length].strip()
+        cache_summary = False  # Don't cache if summary is empty
 
-    cache.set(cache_key, summary_text)
+    # If no proper summary was extracted, done write the corrupted summary to cache!
+    if cache_summary:
+        cache.set(cache_key, summary_text)
     logger.info(f"Generated/cached summary for: {document_file_path} (len: {len(summary_text)})")
 
     try:
