@@ -3,15 +3,18 @@ import asyncio
 import os
 import re
 from typing import Optional
+import logging
 
 import httpx
 import torch
 from tqdm.auto import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from openai import AsyncOpenAI, APIError
 from legalbenchrag.utils.credentials import credentials
 import cohere
 
+# --- Setup Logger ---
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONCURRENCY_LIMIT = 1  # Set this to one to avoid errors for now
 
@@ -28,7 +31,7 @@ def clean_response(response: str | None, y_true: list[str]) -> str:
         str: Matching y_true label if found, otherwise an empty string.
     """
     if not response:
-        print("Response was None!")
+        logger.warning("Clean_response received a None or empty response.")
         return ""
 
     if y_true == []:
@@ -49,7 +52,6 @@ def clean_response(response: str | None, y_true: list[str]) -> str:
 class BaseGenerator(ABC):
     def __init__(self, model_name: str, **kwargs):
         self.model_name = model_name
-        # kwargs might include temperature, max_new_tokens if common to all
         self.temperature = kwargs.get("temperature", 0.7)
         self.max_new_tokens = kwargs.get("max_new_tokens", 256)
 
@@ -175,57 +177,65 @@ class CohereGenerator(APIGenerator):
                 return f"ERROR: Unexpected error - {e}"
 
 
-class LlamaLocalGenerator(LocalGenerator):
+class HuggingFaceLocalGenerator(LocalGenerator):
+    """A generic generator for local Hugging Face Causal LM models."""
     def __init__(self, model_name: str, batch_size: int, device: str, **kwargs):
         super().__init__(model_name, batch_size=batch_size, device=device, **kwargs)
-        try:
-            # Determine torch_dtype based on device capability
-            if self.device == "cuda" and torch.cuda.is_available():
-                dtype = torch.float16
-            elif self.device == "mps" and torch.backends.mps.is_available():
-                dtype = torch.float16
-            else:
-                dtype = torch.float32  # Default for CPU
 
+        # --- 4-bit quantization for efficient inference ---
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+
+        try:
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
-                torch_dtype=dtype,
-                # device_map="auto" can be useful for multi-GPU or very large models.
-                # For single explicit device, to(self.device) is more direct.
+                quantization_config=quantization_config,
+                # device_map="auto",
                 trust_remote_code=True
-            ).to(self.device)
+            ).to_device(self.device)
 
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
-                self.model.config.pad_token_id = self.model.config.eos_token_id  # Also update model config
 
-            self.model.eval()  # Set model to evaluation mode
+            self.model.eval()
         except Exception as e:
-            print(f"Error initializing LlamaLocalGenerator for {model_name}: {e}")
+            logger.error(f"Error initializing HuggingFaceLocalGenerator for {model_name}: {e}", exc_info=True)
             raise  # Re-raise exception to signal failure to initialize
 
     async def generate(self, prompts: list[str], y_labels: list[str], **generation_kwargs) -> list[str]:
         temperature = generation_kwargs.get("temperature", self.temperature)
         max_new_tokens = generation_kwargs.get("max_new_tokens", self.max_new_tokens)
 
-        print(
-            f"Llama generating {len(prompts)} prompts for model {self.model_name} with batch_size {self.batch_size}...")
+        logger.info(f"Generating {len(prompts)} responses with local model {self.model_name}...")
         all_generations = []
 
         # This method is async to match BaseGenerator, but internal HF logic is synchronous.
         # No actual `await` on I/O or true async operations here, but the signature matches.
         # If this were part of a larger asyncio application, long-running sync code should
         # ideally be run in a thread pool executor to avoid blocking the event loop.
-        for i in tqdm(range(0, len(prompts), self.batch_size), desc=f"Generating {self.model_name}"):
+        for i in tqdm(range(0, len(prompts), self.batch_size), desc=f"Generating with {self.model_name}"):
             batch_prompts = prompts[i:i + self.batch_size]
+
+            # --- Apply model-specific chat template ---
+            # This is crucial for instruction-tuned models like SaulLM or Llama-3-Instruct
+            chat_formatted_prompts = []
+            for prompt in batch_prompts:
+                messages = [{"role": "user", "content": prompt}]
+                formatted = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                logger.debug(f"Prompt after formatting: {formatted}...")
+                chat_formatted_prompts.append(formatted)
 
             inputs = self.tokenizer(
                 batch_prompts,
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=2048  # Adjust as needed, consider model's max context
+                max_length=4096
             ).to(self.device)
 
             # Store length of input_ids to slice off the prompt from the generated output
@@ -233,19 +243,17 @@ class LlamaLocalGenerator(LocalGenerator):
 
             try:
                 with torch.no_grad():
-                    # Ensure do_sample is True if temperature is not 1.0 or top_p/top_k are used
-                    do_sample = True if temperature < 1.0 or temperature > 1.0 else False
+                    do_sample = temperature > 0.0
 
                     generated_ids = self.model.generate(
                         **inputs,
                         max_new_tokens=max_new_tokens,
-                        temperature=temperature,
+                        temperature=temperature if do_sample else None,
                         do_sample=do_sample,
                         pad_token_id=self.tokenizer.pad_token_id,
-                        # top_p=0.9, # Example: add other generation params if needed
                     )
             except Exception as e:
-                print(f"Error during model.generate for a batch: {e}")
+                logger.error(f"Error during model.generate for a batch: {e}", exc_info=True)
                 # Add error placeholders for this batch
                 all_generations.extend([f"ERROR: Generation failed - {e}" for _ in batch_prompts])
                 continue
@@ -254,8 +262,6 @@ class LlamaLocalGenerator(LocalGenerator):
             # generated_ids shape: (batch_size, sequence_length)
             batch_results = []
             for j, output_ids in enumerate(generated_ids):
-                # The generated sequence includes the input prompt.
-                # We need to decode only the newly generated tokens.
                 prompt_length = input_ids_lengths[j]
                 # Check if generated sequence is longer than prompt (i.e., something was generated)
                 if len(output_ids) > prompt_length:
@@ -265,14 +271,9 @@ class LlamaLocalGenerator(LocalGenerator):
                     batch_results.append(res)
                 else:
                     # Nothing new was generated, or generation was shorter than expected (e.g., only EOS)
-                    batch_results.append("")  # Or some indicator of no new generation
+                    batch_results.append("")
 
             all_generations.extend(batch_results)
-
-            # Clean up GPU memory for large models if processing many batches, though PyTorch usually handles it.
-            # del inputs, generated_ids
-            # if self.device == "cuda":
-            #     torch.cuda.empty_cache()
 
         return all_generations
 
@@ -284,6 +285,7 @@ def create_generator(args) -> BaseGenerator:
         "max_new_tokens": args.max_new_tokens,
     }
     model_name_lower = args.model_name.lower()
+
     if "gpt-" in model_name_lower or "openai/" in model_name_lower:
         # Set API keys from credentials
         os.environ["OPENAI_API_KEY"] = credentials.ai.openai_api_key.get_secret_value()
@@ -296,19 +298,19 @@ def create_generator(args) -> BaseGenerator:
     elif "command-" in model_name_lower or "cohere/" in model_name_lower:
         # Set API keys from credentials
         os.environ["COHERE_API_KEY"] = credentials.ai.cohere_api_key.get_secret_value()
-        # TODO: Refactor credentials in a project credentials dir
         api_key = os.getenv("COHERE_API_KEY")
         if not api_key:
             raise ValueError("Cohere API key must be provided via COHERE_API_KEY environment variable for Cohere models.")
         return CohereGenerator(model_name=args.model_name, api_key=api_key, **common_kwargs)
 
-    elif "llama" in model_name_lower:
-        return LlamaLocalGenerator(
+    elif "llama" in model_name_lower or "saul" in model_name_lower:
+        return HuggingFaceLocalGenerator(
             model_name=args.model_name,
             batch_size=args.batch_size,
             device=args.device,
             **common_kwargs
         )
+
     else:
         raise ValueError(
             f"Unsupported model_name or unable to determine model type: {args.model_name}. "

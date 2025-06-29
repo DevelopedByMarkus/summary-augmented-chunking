@@ -44,7 +44,6 @@ RETRIEVAL_STRATEGY_CONFIGS = {
         rerank_top_k=0,  # This value is used by legalbenchrag, set to 0 or an appropriate int
         token_limit=None  # No specific token limit on retrieved content length for now
     ),
-    # Example for a non-summary baseline strategy (if you define one later)
     "rcts_oai3S_X": BaselineStrategyType(
         chunking_strategy=ChunkingStrategy(
             strategy_name="rcts",
@@ -52,6 +51,34 @@ RETRIEVAL_STRATEGY_CONFIGS = {
             chunk_overlap_ratio=0.0,
         ),
         embedding_model=AIEmbeddingModel(company="openai", model="text-embedding-3-small"),
+        embedding_top_k=64,
+        rerank_model=None,
+        rerank_top_k=0,
+        token_limit=None
+    ),
+    "s-rcts_LbertB_X": BaselineStrategyType(
+        chunking_strategy=ChunkingStrategy(
+            strategy_name="summary_rcts",
+            chunk_size=1000,  # ~=250 tokens (medium chunk size)
+            chunk_overlap_ratio=0.1,
+            summary_model=DEFAULT_SUMMARIZATION_MODEL,
+            summary_prompt_template=DEFAULT_SUMMARY_PROMPT_TEMPLATE,
+            prompt_target_char_length=DEFAULT_PROMPT_TARGET_CHAR_LENGTH,
+            summary_truncation_length=DEFAULT_SUMMARY_TRUNCATION_LENGTH
+        ),
+        embedding_model=AIEmbeddingModel(company="huggingface", model="nlpaueb/legal-bert-base-uncased"),
+        embedding_top_k=64,  # Number of candidates to fetch before reranking (or final if no reranker) -> use 64 to only extract once if ablation for top-k
+        rerank_model=None,  # 'X' implies no reranker
+        rerank_top_k=0,  # This value is used by legalbenchrag, set to 0 or an appropriate int
+        token_limit=None  # No specific token limit on retrieved content length for now
+    ),
+    "rcts_LbertB_X": BaselineStrategyType(
+        chunking_strategy=ChunkingStrategy(
+            strategy_name="rcts",
+            chunk_size=1000,
+            chunk_overlap_ratio=0.1,
+        ),
+        embedding_model=AIEmbeddingModel(company="huggingface", model="nlpaueb/legal-bert-base-uncased"),
         embedding_top_k=64,
         rerank_model=None,
         rerank_top_k=0,

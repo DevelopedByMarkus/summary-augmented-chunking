@@ -33,6 +33,9 @@ async def main(args):
     logging.getLogger("pysqlite_vec").setLevel(logging.WARNING)
     logging.getLogger("bm25s").setLevel(logging.WARNING)
 
+    # --- Setup Logger ---
+    logger = logging.getLogger(__name__)
+
     start_time = datetime.now()
     print(f"Starting ALQA benchmark run at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -44,12 +47,21 @@ async def main(args):
     os.environ["OPENAI_API_KEY"] = credentials.ai.openai_api_key.get_secret_value()
     os.environ["COHERE_API_KEY"] = credentials.ai.cohere_api_key.get_secret_value()
 
-    corpus_docs = load_alqa_corpus("./data/corpus/alqa/alqa_corpus_gt_only.jsonl")
-    # corpus_docs = load_alqa_corpus("./data/corpus/alqa/open_australian_legal_corpus_first3.jsonl")
+    if args.corpus == "debug":
+        corpus_docs = load_alqa_corpus("./data/corpus/alqa/open_australian_legal_corpus_first3.jsonl")
+        logger.info("Loaded AL corpus with first 3 documents.")
+    elif args.corpus == "full":
+        corpus_docs = load_alqa_corpus("./data/corpus/alqa/open_australian_legal_corpus_full.jsonl")
+    else:
+        corpus_docs = load_alqa_corpus("./data/corpus/alqa/alqa_corpus_gt_only.jsonl")
+
     corpus_map = {doc.file_path: doc.content for doc in corpus_docs}
 
-    test_items, updated_corpus_map = load_alqa_test_set("./data/benchmarks/open_australian_legal_qa_full.jsonl", corpus_map)
-    # test_items, updated_corpus_map = load_alqa_test_set("./data/benchmarks/open_australian_legal_qa_first3.jsonl", corpus_map)
+    if args.corpus == "debug":
+        test_items, updated_corpus_map = load_alqa_test_set("./data/benchmarks/open_australian_legal_qa_first3.jsonl", corpus_map)
+        logger.info("Loaded ALQA test set with 3 questions for debugging.")
+    else:
+        test_items, updated_corpus_map = load_alqa_test_set("./data/benchmarks/open_australian_legal_qa_full.jsonl", corpus_map)
 
     # If the corpus_map was updated, regenerate the list of Document objects for ingestion
     if len(updated_corpus_map) > len(corpus_docs):
@@ -201,8 +213,10 @@ if __name__ == '__main__':
     # Model and Retrieval Config
     parser.add_argument("--model-name", "-m", type=str, required=True, help="Name of the generator LLM.")
     parser.add_argument("--retrieval-strategy", "-r", type=str, default="s-rcts_oai3S_X",
-                        choices=["s-rcts_oai3S_X", "rcts_oai3S_X", "X"],
+                        choices=["s-rcts_oai3S_X", "s-rcts_LbertB_X", "rcts_oai3S_X", "rcts_LbertB_X", "X"],
                         help="Name of the retrieval strategy (from retrieval.py configs, or 'X' for no retrieval).")
+    parser.add_argument("--corpus", "-c", type=str, default="gt_only",
+                        choices=["debug", "gt_only", "full"], help="Which corpus to use for the retrieval. Debug uses a small corpus and only 3 qa-pairs for fast pipeline debugging.")
     parser.add_argument("--top-k", "-k", type=int, default=3, help="Number of retrieved snippets to use for context.")
     parser.add_argument("--eval-embedding-model", type=str, default="text-embedding-3-large",
                         help="Name of the embedding model for answer similarity evaluation.")
@@ -217,7 +231,7 @@ if __name__ == '__main__':
     # LLM Generator Config
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device for local models.")
-    parser.add_argument("--temperature", type=float, default=0.1, help="Sampling temperature for LLM generation.")
+    parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature for LLM generation.")
     parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum new tokens for LLM generation.")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for local LLM inference.")
 
