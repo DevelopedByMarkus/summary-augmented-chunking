@@ -955,7 +955,7 @@ async def generate_document_summary(
 
     if len(summary_text) > truncate_char_length:
         summary_text = summary_text[:truncate_char_length].strip()
-        logger.debug(f"Summary for {document_file_path} hard-truncated to {truncate_char_length} chars.")
+        logger.info(f"Summary for {document_file_path} hard-truncated to {truncate_char_length} chars.")
         cache_summary = False  # Don't cache if we had to truncate
 
     if not summary_text.strip() and document_content.strip():
@@ -967,6 +967,7 @@ async def generate_document_summary(
     if cache_summary:
         cache.set(cache_key, summary_text)
     logger.info(f"Generated/cached summary for: {document_file_path} (len: {len(summary_text)})")
+    logger.info(f"1. Summary:\n{summary_text}\n\n2. Prompt:\n{final_prompt_content}")
 
     try:
         path_parts = os.path.normpath(document_file_path).split(os.sep)
