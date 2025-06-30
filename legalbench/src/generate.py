@@ -195,9 +195,9 @@ class HuggingFaceLocalGenerator(LocalGenerator):
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 quantization_config=quantization_config,
-                # device_map="auto",
+                device_map="auto",
                 trust_remote_code=True
-            ).to_device(self.device)
+            )  # .to(self.device)
 
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
