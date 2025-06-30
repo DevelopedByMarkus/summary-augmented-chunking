@@ -57,7 +57,7 @@ def _chunk_recursive(document_content: str, chunk_size: int, chunk_overlap_ratio
             current_search_pos = start_index + 1
         except ValueError:
             logger.warning(
-                f"Could not find exact match for RCTS split text in document '{document.file_path}'. "  # type: ignore
+                f"Could not find exact match for RCTS split text. "  # type: ignore
                 f"Split: '{split_text[:50]}...'. This split will be skipped."
             )
             # Attempting to advance current_search_pos naively if a split fails can lead to
