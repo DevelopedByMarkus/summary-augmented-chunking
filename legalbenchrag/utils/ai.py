@@ -878,7 +878,7 @@ async def generate_document_summary(
     """
     # Define a safe token limit well within the model's context window
     # gpt-4o-mini has a 128k context window. 90% (=120k) is a safe upper bound for the input.
-    CONTEXT_WINDOW_BUFFER = 0.5  # 0.9375
+    CONTEXT_WINDOW_BUFFER = 0.5  # 0.9375  # TODO: Find a good value for this!
     max_tokens_for_summary = summarization_model.context_window_tokens * CONTEXT_WINDOW_BUFFER
 
     if summarization_model.company != "openai":
@@ -967,7 +967,7 @@ async def generate_document_summary(
     if cache_summary:
         cache.set(cache_key, summary_text)
     logger.info(f"Generated/cached summary for: {document_file_path} (len: {len(summary_text)})")
-    logger.info(f"1. Summary:\n{summary_text}\n\n2. Prompt:\n{final_prompt_content}")
+    logger.debug(f"1. Summary:\n{summary_text}\n\n2. Prompt:\n{final_prompt_content}")
 
     try:
         path_parts = os.path.normpath(document_file_path).split(os.sep)
