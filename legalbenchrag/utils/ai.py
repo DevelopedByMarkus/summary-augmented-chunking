@@ -55,15 +55,28 @@ class AIModel(BaseModel):
             case "openai":
                 match self.model:
                     case "gpt-4o-mini":
-                        return 150000000
+                        return 200000
                     case "gpt-4o":
-                        return 30000000
+                        return 30000
                     case m if m.startswith("gpt-4-turbo"):
                         return 2000000
                     case _:
-                        return 1000000
+                        return 10000
             case "anthropic":
                 return 400000
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def context_window_tokens(self) -> int:
+        match self.company:
+            case "openai":
+                match self.model:
+                    case "gpt-4o-mini":
+                        return 128000
+                    case _:
+                        return 100000
+            case _:
+                return 100000  # Default
 
 
 class AIMessage(BaseModel):
@@ -93,7 +106,7 @@ class AIEmbeddingModel(BaseModel):
     def ratelimit_rpm(self) -> float:
         match self.company:
             case "openai":
-                return 5000
+                return 3000
             case "cohere":
                 return 10000
             case "voyageai":
@@ -112,7 +125,7 @@ class AIEmbeddingModel(BaseModel):
             case "voyageai":
                 return 128
             case "huggingface":
-                return 64
+                return 8
 
 
 class AIEmbeddingType(Enum):
@@ -859,6 +872,15 @@ async def generate_document_summary(
         num_ratelimit_retries: int = 5,
         backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 60) + random.uniform(0, 1)
 ) -> str:
+    """
+        Generates a summary for a document, handling long documents by truncating them
+        to include the beginning and end, which are often the most important parts.
+    """
+    # Define a safe token limit well within the model's context window
+    # gpt-4o-mini has a 128k context window. 90% (=120k) is a safe upper bound for the input.
+    CONTEXT_WINDOW_BUFFER = 0.9375
+    max_tokens_for_summary = summarization_model.context_window_tokens * CONTEXT_WINDOW_BUFFER
+
     if summarization_model.company != "openai":
         logger.error(f"Summarization only supports OpenAI. Requested: {summarization_model.company}. Fallback.")
         return document_content[:truncate_char_length].strip()
@@ -878,11 +900,38 @@ async def generate_document_summary(
     logger.info(f"Cache miss for summary. Generating for: {document_file_path} with {summarization_model.model}")
     cache_summary = True
 
-    llm_max_output_tokens = (truncate_char_length // 3) + 50
+    content_to_summarize = document_content
+    try:
+        # Check token count and truncate if necessary
+        num_tokens = ai_num_tokens(summarization_model, document_content)
+        if num_tokens > max_tokens_for_summary:
+            logger.warning(
+                f"Document {document_file_path} is too long ({num_tokens} tokens > {max_tokens_for_summary} max_tokens). "
+                f"Truncating to first and last {max_tokens_for_summary // 2} tokens for summarization."
+            )
+            # Use tiktoken to accurately handle token-based slicing
+            encoding = tiktoken.encoding_for_model(summarization_model.model)
+            tokens = encoding.encode(document_content)
 
+            half_limit = max_tokens_for_summary // 2
+            start_tokens = tokens[:half_limit]
+            end_tokens = tokens[-half_limit:]
+
+            start_text = encoding.decode(start_tokens)
+            end_text = encoding.decode(end_tokens)
+
+            content_to_summarize = f"{start_text}\n\n[... DOCUMENT TRUNCATED ...]\n\n{end_text}"
+    except Exception as e:
+        logger.warning(
+            f"Error during token counting/truncation for {document_file_path}: {e}. Using character-based fallback.")
+        if len(document_content) > 500000:  # Fallback to simple character limit
+            char_limit = 250000
+            content_to_summarize = f"{document_content[:char_limit]}\n\n[... DOCUMENT TRUNCATED ...]\n\n{document_content[-char_limit:]}"
+
+    # Proceed with summarization using the (potentially truncated) content
     try:
         final_prompt_content = summary_prompt_template.format(
-            document_content=document_content, target_char_length=prompt_target_char_length
+            document_content=content_to_summarize, target_char_length=prompt_target_char_length
         )
     except KeyError as e:
         logger.error(
@@ -890,14 +939,11 @@ async def generate_document_summary(
         final_prompt_content = f"Summarize this to about {prompt_target_char_length} chars: {document_content}"
         cache_summary = False  # Don't cache if template is invalid
 
-    messages_for_llm = [
-        AIMessage(role="system",
-                  content="You are an expert legal document summarizer... Output only the summary text."),  # Shortened
-        AIMessage(role="user", content=final_prompt_content)
-    ]
+    messages_for_llm = [AIMessage(role="user", content=final_prompt_content)]
 
     summary_text: str
     try:
+        llm_max_output_tokens = (truncate_char_length // 3) + 50
         summary_text = await ai_call(
             model=summarization_model, messages=messages_for_llm, max_tokens=llm_max_output_tokens,
             temperature=0.2, num_ratelimit_retries=num_ratelimit_retries, backoff_algo=backoff_algo
