@@ -217,7 +217,7 @@ if __name__ == '__main__':
                         help="Name of the retrieval strategy (from retrieval.py configs, or 'X' for no retrieval).")
     parser.add_argument("--corpus", "-c", type=str, default="gt_only",
                         choices=["debug", "gt_only", "full"], help="Which corpus to use for the retrieval. Debug uses a small corpus and only 3 qa-pairs for fast pipeline debugging.")
-    parser.add_argument("--top-k", "-k", type=int, default=3, help="Number of retrieved snippets to use for context.")
+    parser.add_argument("--top-k", "-k", type=int, default=4, help="Number of retrieved snippets to use for context.")
     parser.add_argument("--eval-embedding-model", type=str, default="text-embedding-3-large",
                         help="Name of the embedding model for answer similarity evaluation.")
 
