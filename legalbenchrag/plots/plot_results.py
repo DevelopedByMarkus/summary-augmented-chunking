@@ -358,9 +358,9 @@ def plot_grouped_results(plot_df: pd.DataFrame, selected_groups: dict[str, list[
                         color=group_color
                     )
 
-        ax.set_title(f'{plot_title_base} - {metric_label} vs. K')
-        ax.set_xlabel('K (Top-K Results)')
-        ax.set_ylabel(metric_label)
+        # ax.set_title(f'{plot_title_base} - {metric_label} vs. K')
+        ax.set_xlabel('Top-K', fontsize=17)
+        ax.set_ylabel(metric_label, fontsize=17)
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
 
         # --- Create Custom Legend for Groups ---
@@ -369,14 +369,15 @@ def plot_grouped_results(plot_df: pd.DataFrame, selected_groups: dict[str, list[
             legend_elements.append(Line2D([0], [0], color=colors[group_name], lw=2, linestyle='-', label=group_name))
 
         if legend_elements:
-            ax.legend(handles=legend_elements, title="Strategy Groups", bbox_to_anchor=(1.04, 1), loc="upper left")
+            ax.legend(handles=legend_elements, title="Strategies", loc="upper right", fontsize=15)  # bbox_to_anchor=(1.04, 1)
             # Adjust layout to prevent legend cutoff
             plt.tight_layout(rect=[0, 0, 0.85, 1])  # Adjust right margin for legend
         else:
             plt.tight_layout()  # Use default tight layout if no legend
 
         # --- Save the plot ---
-        plot_filename = output_dir / f"{output_dir.name}_{metric}_vs_k.png"
+        # plot_filename = output_dir / f"{output_dir.name}_{metric}_vs_k.png"
+        plot_filename = output_dir / f"{output_dir.name}_{metric}_vs_topk.pdf"
         try:
             plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
             print(f"Saved plot: {plot_filename}")

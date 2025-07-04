@@ -6,11 +6,12 @@ from legalbenchrag.methods.hypa import HypaStrategy
 
 # --- Default Summarization Settings ---
 DEFAULT_SUMMARIZATION_MODEL = AIModel(company="openai", model="gpt-4o-mini")
+# DEFAULT_SUMMARIZATION_MODEL = AIModel(company="huggingface", model="meta-llama/Llama-3-8B-Instruct")
 DEFAULT_SUMMARY_PROMPT_TEMPLATE = """System: You are an expert legal document summarizer.
-User: Summarize the following legal document text. Focus on extracting the most important entities, core purpose, and key legal topics. The summary must be concise, approximately {target_char_length} characters long, and optimized for providing context to smaller text chunks. Output only the summary text. Document:
+User: Summarize the following legal document text. Focus on extracting the most important entities, core purpose, and key legal topics. The summary must be concise, maximum {target_char_length} characters long, and optimized for providing context to smaller text chunks. Output only the summary text. Document:
 {document_content}"""
-DEFAULT_PROMPT_TARGET_CHAR_LENGTH = 150  # Target for LLM's generation
-DEFAULT_SUMMARY_TRUNCATION_LENGTH = 170  # Hard truncation limit after generation
+DEFAULT_PROMPT_TARGET_CHAR_LENGTH = 200  # 150  # Target for LLM's generation
+DEFAULT_SUMMARY_TRUNCATION_LENGTH = 220  # 170  # Hard truncation limit after generation
 
 # Chunking Strategies (used by both Baseline and HyPA)
 chunk_strategies: List[ChunkingStrategy] = [

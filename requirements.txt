@@ -69,7 +69,7 @@ httpx==0.27.0
     #   openai
 httpx-sse==0.4.0
     # via cohere
-huggingface-hub==0.24.5
+huggingface-hub
     # via tokenizers
 idna==3.7
     # via
@@ -238,3 +238,13 @@ llama-index-embeddings-cohere
 llama-index-embeddings-openai
 llama-index-embeddings-voyageai
 
+
+legalbenchrag~=0.1
+scikit-learn~=1.6.1
+nltk~=3.9.1
+datasets~=3.6.0
+torch~=2.6.0
+typing_extensions~=4.13.2
+transformers
+bitsandbytes
+accelerate

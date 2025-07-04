@@ -3,12 +3,13 @@
 .swp
 __pycache__
 *.log
-.png
-.jpg
-.pdf
-.json
-.csv
-.txt
+*.png
+*.jpg
+*.pdf
+*.json
+*.jsonl
+*.csv
+*.txt
 
 credentials/*
 !credentials/credentials.example.toml
@@ -18,6 +19,9 @@ data/cache
 data/raw_data
 benchmark_results
 plots
+legalbench/output
+legalbench/results
+alqa/data
 
 # TODO: Think about .egg-info at a later time
 LegalBenchRAG.egg-info
