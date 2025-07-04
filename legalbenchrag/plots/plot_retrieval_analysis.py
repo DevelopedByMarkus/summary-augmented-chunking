@@ -131,19 +131,20 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir):
         else:
             print(f"Warning: Data length mismatch or missing data for dataset '{ds_name}' in strategy '{strategy_name}'. Skipping its line.")
 
-    ax.set_title(f"Retrieval Analysis: Wrong File Path %\nStrategy: {strategy_name}", fontsize=14)
-    ax.set_xlabel("Top-K", fontsize=12)
-    ax.set_ylabel("Wrong File Path (%)", fontsize=12)
+    # ax.set_title(f"Retrieval Analysis: Wrong File Path %\nStrategy: {strategy_name}", fontsize=14)
+    ax.set_xlabel("Top-K", fontsize=17)
+    ax.set_ylabel("PFD(%)", fontsize=17)
     ax.set_ylim(0, 105)  # Y axis from 0 to 100 (with padding)
     ax.grid(True, linestyle=':', alpha=0.7)
-    ax.legend(fontsize=10)
+    ax.legend(fontsize=15)
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
     # Save plot
     # No need to sanitize filename as user confirmed it's safe
-    plot_filename = os.path.join(output_dir, f"{strategy_name}.png")
+    # plot_filename = os.path.join(output_dir, f"{strategy_name}.png")
+    plot_filename = os.path.join(output_dir, "pfd_baseline.pdf")
     try:
         plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
         print(f"Plot saved to: {plot_filename}")
