@@ -7,6 +7,7 @@ import ast
 from matplotlib.lines import Line2D
 import sys
 from collections import defaultdict
+import re
 
 from legalbenchrag.utils.utils import ABBREVIATIONS
 
@@ -18,7 +19,7 @@ LINESTYLES = ['-', '--', '-.', ':']
 DEFAULT_K = 64  # Default K if none found, though the logic should prevent this
 
 
-# --- Helper Functions ---
+# --- Helper Functions (Originals, mostly unchanged) ---
 
 
 def get_k_value(row):
@@ -107,8 +108,6 @@ def load_and_consolidate_data(csv_paths: list[Path]) -> pd.DataFrame | None:
             continue
         try:
             df = pd.read_csv(csv_path)
-            # Add source file info if needed later for debugging
-            # df['source_file'] = csv_path.name
             all_dfs.append(df)
             print(f"Successfully loaded {csv_path}")
         except Exception as e:
@@ -164,7 +163,7 @@ def get_strategy_groups_from_user(unique_strategies: pd.DataFrame) -> dict[str, 
             return None
         if not id_list:
             print(f"Warning: Group '{group_name}' has an empty list of strategy IDs. It will be ignored.")
-            continue  # Skip empty groups silently or warn
+            continue
 
         processed_ids = []
         for strategy_id in id_list:
@@ -180,11 +179,10 @@ def get_strategy_groups_from_user(unique_strategies: pd.DataFrame) -> dict[str, 
             if strategy_id in seen_ids:
                 print(
                     f"Warning: Strategy ID {strategy_id} is included in multiple groups. It will be plotted based on group '{group_name}'.")
-                # Decide how to handle duplicates: last one wins, first one wins, or error? Let's allow it but warn.
             processed_ids.append(strategy_id)
             seen_ids.add(strategy_id)
 
-        if processed_ids:  # Only add group if it has valid IDs
+        if processed_ids:
             valid_groups[group_name] = processed_ids
 
     if not valid_groups:
@@ -198,23 +196,97 @@ def get_strategy_groups_from_user(unique_strategies: pd.DataFrame) -> dict[str, 
     return valid_groups, strategy_map
 
 
-def calculate_f1(row):
-    """Safely calculates F1 score, handling potential NaN/zero values."""
-    precision = row['precision']
-    recall = row['recall']
-    # Check for NaN or non-numeric types before calculation
-    if pd.isna(precision) or pd.isna(recall) or not isinstance(precision, (int, float, np.number)) or not isinstance(
-            recall, (int, float, np.number)):
-        return np.nan  # Return NaN if P or R is missing/invalid
-    if precision + recall == 0:
-        return 0.0
+### --- NEW --- ###
+def detect_and_select_tasks(df: pd.DataFrame) -> list[str]:
+    """
+    Detects available benchmark tasks from DataFrame columns and prompts the user to select which ones to plot.
+    """
+    found_tasks = set()
+    # Regex to find prefixes like 'maud|' or 'cuad|'
+    task_regex = re.compile(r"(\w+)\|precision")
+
+    for col in df.columns:
+        match = task_regex.match(col)
+        if match:
+            found_tasks.add(match.group(1))
+
+    # Check for the default 'Overall' task (non-prefixed metrics)
+    if 'precision' in df.columns and 'recall' in df.columns:
+        # Add "Overall" to the beginning for consistent ordering
+        available_tasks = ["Overall"] + sorted(list(found_tasks))
     else:
-        return 2 * (precision * recall) / (precision + recall)
+        available_tasks = sorted(list(found_tasks))
+
+    if not available_tasks:
+        print("Error: No plottable tasks found. The script requires 'precision'/'recall' columns or "
+              "prefixed columns like 'maud|precision'.", file=sys.stderr)
+        return []
+
+    print("\n--- Found Plottable Tasks ---")
+    for i, task_name in enumerate(available_tasks):
+        print(f"[{i}]: {task_name}")
+
+    while True:
+        try:
+            user_input = input("Enter the indices of tasks to plot (e.g., '0' or '0, 1, 3'): ")
+            selected_indices = [int(i.strip()) for i in user_input.split(',')]
+
+            # Validate indices
+            if all(0 <= i < len(available_tasks) for i in selected_indices):
+                selected_tasks = [available_tasks[i] for i in selected_indices]
+                print(f"--- Selected tasks: {selected_tasks} ---")
+                return selected_tasks
+            else:
+                print(f"Error: Invalid index. Please enter indices between 0 and {len(available_tasks) - 1}.",
+                      file=sys.stderr)
+        except (ValueError, IndexError):
+            print("Error: Invalid input. Please enter a comma-separated list of valid integers.", file=sys.stderr)
 
 
-def prepare_data_for_plotting(df: pd.DataFrame, selected_groups: dict[str, list[int]],
-                              strategy_map: dict[int, dict]) -> pd.DataFrame | None:
-    """Filters, prepares metrics, calculates K, and adds grouping info."""
+### --- NEW --- ###
+def ask_for_plotting_mode() -> bool:
+    """Asks the user if they want to combine multi-task plots."""
+    while True:
+        choice = input("\nPlot selected tasks on the same graph? (yes/no): ").lower().strip()
+        if choice in ['yes', 'y']:
+            return True
+        elif choice in ['no', 'n']:
+            return False
+        else:
+            print("Invalid input. Please enter 'yes' or 'no'.")
+
+
+def calculate_f1(precision: pd.Series, recall: pd.Series) -> pd.Series:
+    """Safely calculates F1 score from precision and recall Series."""
+    # Ensure inputs are numeric
+    precision = pd.to_numeric(precision, errors='coerce')
+    recall = pd.to_numeric(recall, errors='coerce')
+
+    # Calculate F1, handling division by zero
+    f1 = 2 * (precision * recall) / (precision + recall)
+    return f1.fillna(0)  # If P+R is 0 or NaN, F1 is 0
+
+
+### --- MODIFIED --- ###
+def prepare_data_for_task(df: pd.DataFrame, selected_groups: dict[str, list[int]],
+                          strategy_map: dict[int, dict], task_name: str) -> pd.DataFrame | None:
+    """
+    Filters and prepares data for a SINGLE specified task.
+    This involves selecting the correct prefixed columns and renaming them for the plotting function.
+    """
+    # Determine the column prefix for the given task
+    prefix = '' if task_name == 'Overall' else f'{task_name}|'
+    metric_cols = {
+        'precision': f'{prefix}precision',
+        'recall': f'{prefix}recall',
+        'f1_score': f'{prefix}f1_score'
+    }
+
+    # Check if required source columns exist
+    if metric_cols['precision'] not in df.columns or metric_cols['recall'] not in df.columns:
+        print(f"Warning: Skipping task '{task_name}' because required columns "
+              f"('{metric_cols['precision']}', '{metric_cols['recall']}') were not found.")
+        return None
 
     # Create a mapping from strategy ID back to its identifying dict for easier filtering
     id_to_details = {idx: details for idx, details in strategy_map.items() if
@@ -222,26 +294,18 @@ def prepare_data_for_plotting(df: pd.DataFrame, selected_groups: dict[str, list[
 
     # Filter rows matching selected strategies
     rows_to_keep = []
-    # Fill NaN in reranker column for consistent matching during filtering
-    df[IDENTIFYING_COLS[3]] = df[IDENTIFYING_COLS[3]].fillna('<None>')
+    df[IDENTIFYING_COLS[3]] = df[IDENTIFYING_COLS[3]].fillna('<None>')  # Handle NaN in reranker for matching
 
     for strategy_id, details in id_to_details.items():
-        # Ensure comparison handles the filled NaN correctly
         details_copy = details.copy()
         if pd.isna(details_copy['rerank_model_name']):
             details_copy['rerank_model_name'] = '<None>'
 
-        # Build filter condition dynamically
-        condition = True
+        condition = pd.Series([True] * len(df))
         for col in IDENTIFYING_COLS:
             condition &= (df[col] == details_copy[col])
 
-        # Find the group name for this strategy ID
-        group_name = None
-        for g_name, g_ids in selected_groups.items():
-            if strategy_id in g_ids:
-                group_name = g_name
-                break
+        group_name = next((g_name for g_name, g_ids in selected_groups.items() if strategy_id in g_ids), None)
 
         strategy_rows = df[condition].copy()
         if not strategy_rows.empty and group_name:
@@ -251,208 +315,251 @@ def prepare_data_for_plotting(df: pd.DataFrame, selected_groups: dict[str, list[
 
     if not rows_to_keep:
         print("Error: No data rows match the selected strategies.", file=sys.stderr)
-        # Revert the fillna if necessary, though maybe not needed if exiting
-        # df[IDENTIFYING_COLS[3]] = df[IDENTIFYING_COLS[3]].replace({'<None>': np.nan})
+        df[IDENTIFYING_COLS[3]] = df[IDENTIFYING_COLS[3]].replace({'<None>': np.nan})  # Revert NaN fill
         return None
 
     plot_df = pd.concat(rows_to_keep, ignore_index=True)
-    # Revert the fillna after filtering is done
-    plot_df[IDENTIFYING_COLS[3]] = plot_df[IDENTIFYING_COLS[3]].replace({'<None>': np.nan})
+    plot_df[IDENTIFYING_COLS[3]] = plot_df[IDENTIFYING_COLS[3]].replace({'<None>': np.nan})  # Revert NaN fill
 
-    # --- Calculate K Value ---
+    # --- Standardize Metric Columns ---
+    # Rename the task-specific columns to the generic names for plotting
+    plot_df['precision'] = pd.to_numeric(plot_df[metric_cols['precision']], errors='coerce')
+    plot_df['recall'] = pd.to_numeric(plot_df[metric_cols['recall']], errors='coerce')
+
+    # Calculate F1 score if missing, otherwise use existing
+    if metric_cols['f1_score'] in plot_df.columns:
+        plot_df['f1_score'] = pd.to_numeric(plot_df[metric_cols['f1_score']], errors='coerce')
+    else:
+        print(f"Info: Calculating F1 score for task '{task_name}'.")
+        plot_df['f1_score'] = calculate_f1(plot_df['precision'], plot_df['recall'])
+
+    # --- Calculate K Value and Final Cleanup ---
     plot_df['k'] = plot_df.apply(get_k_value, axis=1)
 
-    # --- Ensure Metrics are Numeric ---
-    metric_cols_present = [col for col in ['recall', 'precision', 'f1_score'] if col in plot_df.columns]
-    if not any(col in ['recall', 'precision'] for col in metric_cols_present):
-        print("Error: DataFrame lacks 'recall' and/or 'precision' columns required for plotting.", file=sys.stderr)
-        return None
-
-    for col in metric_cols_present:
-        if col != 'f1_score':  # Handle f1 separately
-            plot_df[col] = pd.to_numeric(plot_df[col], errors='coerce')
-
-    # --- Calculate F1 Score if Missing ---
-    if 'f1_score' not in plot_df.columns:
-        if 'precision' in plot_df.columns and 'recall' in plot_df.columns:
-            print("Info: 'f1_score' column not found. Calculating from precision and recall...")
-            plot_df['f1_score'] = plot_df.apply(calculate_f1, axis=1)
-            print("Info: F1 score calculated.")
-        else:
-            print("Error: Cannot calculate F1 score - 'precision' or 'recall' column missing.", file=sys.stderr)
-            # Remove f1_score from metrics to plot if it couldn't be calculated
-            if 'f1_score' in METRICS_TO_PLOT: del METRICS_TO_PLOT['f1_score']
-    else:
-        # Ensure existing f1_score is numeric
-        plot_df['f1_score'] = pd.to_numeric(plot_df['f1_score'], errors='coerce')
-
-    # --- Final Cleanup ---
     essential_plot_cols = ['k', 'group_name', 'strategy_unique_id'] + list(METRICS_TO_PLOT.keys())
     initial_rows = len(plot_df)
-    plot_df = plot_df.dropna(subset=essential_plot_cols)
+    plot_df.dropna(subset=essential_plot_cols, inplace=True)
     final_rows = len(plot_df)
     if initial_rows != final_rows:
-        print(f"Warning: Dropped {initial_rows - final_rows} rows due to missing essential data (K value or metrics).")
+        print(
+            f"Warning: For task '{task_name}', dropped {initial_rows - final_rows} rows due to missing essential data.")
 
     if plot_df.empty:
-        print("Error: No valid data points remaining after processing and NaN removal.", file=sys.stderr)
+        print(f"Error: No valid data points remaining for task '{task_name}' after processing.", file=sys.stderr)
         return None
 
-    # Ensure K is integer after dropna
     plot_df['k'] = plot_df['k'].astype(int)
-
-    print(f"Prepared {len(plot_df)} data points for plotting across {len(selected_groups)} groups.")
+    print(f"Prepared {len(plot_df)} data points for task '{task_name}'.")
     return plot_df
 
 
 # --- Main Plotting Logic ---
 
+### --- MODIFIED --- ###
 def plot_grouped_results(plot_df: pd.DataFrame, selected_groups: dict[str, list[int]], output_dir: Path,
-                         plot_title_base: str):
-    """Generates and saves plots for selected metrics, grouped by strategy."""
-
+                         plot_title_base: str, task_name: str):
+    """
+    Generates and saves plots for a single task, grouping by strategy.
+    Strategy groups are mapped to COLOR, and strategies within groups are mapped to LINESTYLE.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n--- Generating Plots in {output_dir} ---")
+    print(f"\n--- Generating Plots for Task '{task_name}' in {output_dir} ---")
 
     group_names = list(selected_groups.keys())
-    num_groups = len(group_names)
-    # cmap = plt.get_cmap('tab10') # Example colormap
-    cmap = plt.get_cmap('viridis', num_groups)  # Colormap based on number of groups
-
+    cmap = plt.get_cmap('viridis', len(group_names))
     colors = {group_name: cmap(i) for i, group_name in enumerate(group_names)}
 
-    # --- Plotting Loop Start ---
     for metric, metric_label in METRICS_TO_PLOT.items():
         if metric not in plot_df.columns:
-            print(f"Skipping plot for '{metric_label}' as column is missing.")
+            print(f"Skipping plot for '{metric_label}' as column is missing for task '{task_name}'.")
             continue
 
-        fig, ax = plt.subplots(figsize=(12, 7))
-        group_linestyle_indices = defaultdict(int)  # Track linestyle index per group
+        fig, ax = plt.subplots(figsize=(12, 8))
+        group_linestyle_indices = defaultdict(int)
 
-        # Iterate through groups first to ensure consistent color/linestyle assignment
         for group_name in group_names:
             group_color = colors[group_name]
             strategy_ids_in_group = selected_groups[group_name]
 
-            # Iterate through unique strategies within the group
-            for strategy_id in sorted(strategy_ids_in_group):  # Sort for consistent linestyle assignment
-                # Filter data for this specific strategy ID and group
+            for strategy_id in sorted(strategy_ids_in_group):
                 strategy_df = plot_df[(plot_df['group_name'] == group_name) &
                                       (plot_df['strategy_unique_id'] == strategy_id)].sort_values(by='k')
 
                 if not strategy_df.empty:
-                    # Assign linestyle based on the order within the group
                     style_index = group_linestyle_indices[group_name]
                     linestyle = LINESTYLES[style_index % len(LINESTYLES)]
                     group_linestyle_indices[group_name] += 1
 
-                    # Plot the metric vs k for this specific strategy
-                    # NO label= here, legend is handled separately
-                    ax.plot(
-                        strategy_df['k'],
-                        strategy_df[metric],
-                        # label=f"{group_name} - Strat {strategy_id}", # NO individual labels
-                        marker='o',  # Add markers to points
-                        linestyle=linestyle,
-                        color=group_color
-                    )
+                    label = f"{group_name} (Strat {strategy_id})"  # More descriptive label
+                    ax.plot(strategy_df['k'], strategy_df[metric], marker='o', linestyle=linestyle, color=group_color,
+                            label=label)
 
-        # ax.set_title(f'{plot_title_base} - {metric_label} vs. K')
+        task_display_name = "Overall" if task_name == "Overall" else task_name.upper()
+        ax.set_title(f'{plot_title_base}: {task_display_name} {metric_label} vs. K', fontsize=18)
         ax.set_xlabel('Top-K', fontsize=17)
         ax.set_ylabel(metric_label, fontsize=17)
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+        ax.legend(title="Strategy Groups", fontsize=15)
+        plt.tight_layout()
 
-        # --- Create Custom Legend for Groups ---
-        legend_elements = []
-        for group_name in group_names:
-            legend_elements.append(Line2D([0], [0], color=colors[group_name], lw=2, linestyle='-', label=group_name))
-
-        if legend_elements:
-            ax.legend(handles=legend_elements, title="Strategies", loc="upper right", fontsize=15)  # bbox_to_anchor=(1.04, 1)
-            # Adjust layout to prevent legend cutoff
-            plt.tight_layout(rect=[0, 0, 0.85, 1])  # Adjust right margin for legend
-        else:
-            plt.tight_layout()  # Use default tight layout if no legend
-
-        # --- Save the plot ---
-        # plot_filename = output_dir / f"{output_dir.name}_{metric}_vs_k.png"
-        plot_filename = output_dir / f"{output_dir.name}_{metric}_vs_topk.pdf"
+        metric_filename = metric.replace("|", "_")
+        task_filename = "overall" if task_name == "Overall" else task_name.lower()
+        plot_filename = output_dir / f"{output_dir.name}_{task_filename}_{metric_filename}_vs_topk.pdf"
         try:
             plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
             print(f"Saved plot: {plot_filename}")
         except Exception as e:
             print(f"Error saving plot {plot_filename}: {e}")
-        plt.close(fig)  # Close the figure to free memory
+        plt.close(fig)
+
+
+### --- NEW --- ###
+def plot_combined_results(master_df: pd.DataFrame, selected_groups: dict[str, list[int]],
+                          strategy_map: dict[int, dict], selected_tasks: list[str],
+                          output_dir: Path, plot_title_base: str):
+    """
+    Generates a single plot combining multiple tasks.
+    Tasks are mapped to COLOR, strategy groups are mapped to LINESTYLE.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n--- Generating Combined Plots for Tasks {selected_tasks} in {output_dir} ---")
+
+    # --- Prepare Color/Style Mappings ---
+    task_cmap = plt.get_cmap('plasma', len(selected_tasks))
+    task_colors = {task: task_cmap(i) for i, task in enumerate(selected_tasks)}
+
+    group_names = list(selected_groups.keys())
+    group_linestyles = {group: LINESTYLES[i % len(LINESTYLES)] for i, group in enumerate(group_names)}
+
+    # Loop through each metric to create a separate plot file for it
+    for metric, metric_label in METRICS_TO_PLOT.items():
+        fig, ax = plt.subplots(figsize=(14, 9))
+
+        # --- Pre-calculate K values for the entire dataframe once ---
+        master_df['k'] = master_df.apply(get_k_value, axis=1)
+
+        # Plot lines for each combination of task and strategy
+        for task_name in selected_tasks:
+            prefix = '' if task_name == 'Overall' else f'{task_name}|'
+            metric_col = f"{prefix}{metric}"
+
+            if metric_col not in master_df.columns:
+                print(
+                    f"Warning: Skipping task '{task_name}' in combined plot for '{metric_label}' due to missing column '{metric_col}'.")
+                continue
+
+            task_color = task_colors[task_name]
+
+            for group_name in group_names:
+                group_linestyle = group_linestyles[group_name]
+
+                for strategy_id in selected_groups[group_name]:
+                    details = strategy_map[strategy_id]
+
+                    # Build filter condition
+                    condition = pd.Series([True] * len(master_df))
+                    for col, val in details.items():
+                        if pd.isna(val):
+                            condition &= master_df[col].isna()
+                        else:
+                            condition &= (master_df[col] == val)
+
+                    strategy_df = master_df[condition].copy()
+                    strategy_df[metric_col] = pd.to_numeric(strategy_df[metric_col], errors='coerce')
+                    strategy_df = strategy_df.dropna(subset=['k', metric_col]).sort_values(by='k')
+
+                    if not strategy_df.empty:
+                        ax.plot(strategy_df['k'], strategy_df[metric_col], marker='o', markersize=4,
+                                color=task_color, linestyle=group_linestyle)
+
+        ax.set_title(f'Combined Plot: {metric_label} vs. K', fontsize=18)
+        ax.set_xlabel('Top-K', fontsize=17)
+        ax.set_ylabel(metric_label, fontsize=17)
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+        # --- Create Custom Legends ---
+        task_legend_elements = [Line2D([0], [0], color=task_colors[task], lw=3, label=task) for task in selected_tasks
+                                if f"{'' if task == 'Overall' else task + '|'}{metric}" in master_df.columns]
+        group_legend_elements = [Line2D([0], [0], color='black', lw=2, linestyle=group_linestyles[group], label=group)
+                                 for group in group_names]
+
+        if task_legend_elements and group_legend_elements:
+            legend1 = ax.legend(handles=task_legend_elements, title="Tasks", loc='upper left', bbox_to_anchor=(1.02, 1),
+                                borderaxespad=0.)
+            ax.add_artist(legend1)
+            ax.legend(handles=group_legend_elements, title="Strategy Groups", loc='upper left',
+                      bbox_to_anchor=(1.02, 0.7), borderaxespad=0.)
+
+        plt.tight_layout(rect=[0, 0, 0.85, 1])
+
+        # --- Save the plot ---
+        metric_filename = metric.replace("|", "_")
+        plot_filename = output_dir / f"{output_dir.name}_combined_{metric_filename}_vs_topk.pdf"
+        try:
+            plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+            print(f"Saved combined plot: {plot_filename}")
+        except Exception as e:
+            print(f"Error saving plot {plot_filename}: {e}")
+        plt.close(fig)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Plot benchmark results from one or more results.csv files, allowing strategy grouping.")
+        description="Plot benchmark results from CSV files with interactive task and strategy selection.")
     parser.add_argument(
-        "results_files",
-        type=str,
-        nargs='+',  # Accept one or more file paths
-        help="Path(s) to the results.csv file(s) containing benchmark data."
+        "results_files", type=str, nargs='+', help="Path(s) to the results.csv file(s)."
     )
     parser.add_argument(
-        "-o", "--output-name",
-        type=str,
-        required=True,
-        help="A unique name identifier for this plotting run, used for the output directory name."
+        "-o", "--output-name", type=str, required=True, help="A unique name for the output directory."
     )
     parser.add_argument(
-        "-t", "--plot-title",
-        type=str,
-        required=True,
-        help="Base title for the generated plots (metric name will be appended)."
+        "-t", "--plot-title", type=str, required=True, help="Base title for the plots."
     )
-
     args = parser.parse_args()
 
-    # --- Determine Project Root and Output Directory ---
-    try:
-        script_path = Path(__file__).resolve()
-        project_root = script_path.parents[2]  # Adjust if script location differs
-    except NameError:
-        # If __file__ is not defined (e.g., interactive session), use CWD as project root
-        project_root = Path.cwd()
-        print(f"Warning: Could not determine script path, assuming project root is CWD: {project_root}")
-
+    # --- Setup Paths ---
+    project_root = Path.cwd()
     output_dir = project_root / "plots" / "performance" / args.output_name
 
-    # --- Main Execution ---
-    csv_paths = [Path(f) for f in args.results_files]
-
-    # 1. Load and Consolidate Data
-    master_df = load_and_consolidate_data(csv_paths)
+    # --- Main Execution Flow ---
+    # 1. Load Data
+    master_df = load_and_consolidate_data([Path(f) for f in args.results_files])
     if master_df is None:
-        sys.exit(1)  # Exit if loading failed
-
-    # 2. Identify Unique Strategies
-    # Handle NaN in reranker temporarily for unique identification
-    master_df[IDENTIFYING_COLS[3]] = master_df[IDENTIFYING_COLS[3]].fillna('<None>')
-    unique_strategies = master_df[IDENTIFYING_COLS].drop_duplicates().reset_index(drop=True)
-    # Revert NaN fill after identification
-    master_df[IDENTIFYING_COLS[3]] = master_df[IDENTIFYING_COLS[3]].replace({'<None>': np.nan})
-    unique_strategies[IDENTIFYING_COLS[3]] = unique_strategies[IDENTIFYING_COLS[3]].replace({'<None>': np.nan})
-
-    if unique_strategies.empty:
-        print("Error: No unique strategies found in the provided data.", file=sys.stderr)
         sys.exit(1)
 
-    # 3. Get Strategy Grouping from User
+    # 2. Identify Unique Strategies and Get User Grouping
+    temp_df = master_df.copy()
+    temp_df[IDENTIFYING_COLS[3]] = temp_df[IDENTIFYING_COLS[3]].fillna('<None>')
+    unique_strategies = temp_df[IDENTIFYING_COLS].drop_duplicates().reset_index(drop=True)
+    if unique_strategies.empty:
+        print("Error: No unique strategies found.", file=sys.stderr)
+        sys.exit(1)
+
     user_input_result = get_strategy_groups_from_user(unique_strategies)
     if user_input_result is None:
-        sys.exit(1)  # Exit if user input failed
+        sys.exit(1)
     selected_groups, strategy_map = user_input_result
 
-    # 4. Prepare Data for Plotting
-    plot_df = prepare_data_for_plotting(master_df, selected_groups, strategy_map)
-    if plot_df is None:
-        sys.exit(1)  # Exit if preparation failed
+    # 3. Detect and Select Tasks to Plot
+    selected_tasks = detect_and_select_tasks(master_df)
+    if not selected_tasks:
+        sys.exit(1)
 
-    # 5. Generate and Save Plots
-    plot_grouped_results(plot_df, selected_groups, output_dir, args.plot_title)
+    # 4. Determine Plotting Mode and Generate Plots
+    combine_plots = False
+    if len(selected_tasks) > 1:
+        combine_plots = ask_for_plotting_mode()
+
+    if combine_plots:
+        # Combined plotting mode
+        plot_combined_results(master_df, selected_groups, strategy_map, selected_tasks, output_dir, args.plot_title)
+    else:
+        # Separate plotting mode
+        for task in selected_tasks:
+            plot_df = prepare_data_for_task(master_df, selected_groups, strategy_map, task)
+            if plot_df is not None and not plot_df.empty:
+                plot_grouped_results(plot_df, selected_groups, output_dir, args.plot_title, task_name=task)
+            else:
+                print(f"Skipping plot generation for task '{task}' as no valid data was prepared.")
 
     print("\nPlotting complete.")
