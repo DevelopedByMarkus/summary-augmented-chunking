@@ -1,19 +1,11 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 import os
-import re
 
 from pydantic import BaseModel, computed_field, model_validator
 from typing_extensions import Self
 
-# Define characters typically illegal in Windows filenames and replacement
-ILLEGAL_FILENAME_CHARS = r'[<>:"|?*]'
-REPLACEMENT_CHAR = '_'
-
-
-def sanitize_filename(filename: str) -> str:
-    """Replaces characters illegal in Windows filenames with underscores."""
-    return re.sub(ILLEGAL_FILENAME_CHARS, REPLACEMENT_CHAR, filename)
+from sac_rag.utils.utils import sanitize_filename
 
 
 # max_bridge_gap_len will merge spans that are within max_bridge_gap_len characters of eachother.

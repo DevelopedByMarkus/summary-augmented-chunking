@@ -24,7 +24,7 @@ from src.sac_rag.utils.ai import (
     ai_rerank,
     generate_document_summary  # Import the new summary generation function
 )
-from src.sac_rag.utils.chunking import Chunk, get_chunks  # get_chunks is now async
+from sac_rag.utils.chunking import Chunk, get_chunks  # get_chunks is now async
 
 logger = logging.getLogger(__name__)  # Setup logger
 

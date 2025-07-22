@@ -18,13 +18,13 @@ from llama_index.embeddings.voyageai import VoyageEmbedding
 from pydantic import BaseModel
 from tqdm.asyncio import tqdm
 
-from src.sac_rag.data_models import (
+from sac_rag.data_models import (
     Document as BenchmarkDocument,
     QueryResponse,
     RetrievalMethod,
     RetrievedSnippet,
 )
-from src.sac_rag.utils.ai import (
+from sac_rag.utils.ai import (
     AIEmbeddingModel,
     AIEmbeddingType,
     AIRerankModel,
@@ -32,7 +32,7 @@ from src.sac_rag.utils.ai import (
     ai_embedding,
     ai_rerank,
 )
-from src.sac_rag.utils.chunking import Chunk, get_chunks  # get_chunks is now async
+from sac_rag.utils.chunking import Chunk, get_chunks  # get_chunks is now async
 
 logger = logging.getLogger(__name__)
 

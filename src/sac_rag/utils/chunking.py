@@ -4,8 +4,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel
 import logging  # For logging
 
-from src.sac_rag.data_models import Document
-from src.sac_rag.utils.ai import AIModel, generate_document_summary  # Import new types/functions
+from sac_rag.data_models import Document
+from sac_rag.utils.ai import AIModel, generate_document_summary
 
 logger = logging.getLogger(__name__)  # Setup logger for this module
 

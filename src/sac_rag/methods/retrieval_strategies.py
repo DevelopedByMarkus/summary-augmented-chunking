@@ -1,8 +1,8 @@
 from typing import List, Union
 
-from src.sac_rag.methods.baseline import ChunkingStrategy, RetrievalStrategy as BaselineStrategy
-from src.sac_rag.utils.ai import AIEmbeddingModel, AIRerankModel, AIModel
-from src.sac_rag.methods.hybrid import HybridStrategy
+from sac_rag.methods.baseline import ChunkingStrategy, RetrievalStrategy as BaselineStrategy
+from sac_rag.utils.ai import AIEmbeddingModel, AIRerankModel, AIModel
+from sac_rag.methods.hybrid import HybridStrategy
 
 # --- Default Summarization Settings ---
 DEFAULT_SUMMARIZATION_MODEL = AIModel(company="openai", model="gpt-4o-mini")

@@ -9,7 +9,40 @@ import sys
 from collections import defaultdict
 import re
 
-from sac_rag.utils.utils import ABBREVIATIONS
+# --- Abbreviation Mappings ---
+ABBREVIATIONS = {
+    "embedding": {
+        "text-embedding-3-large": "oai3L",
+        "BAAI/bge-base-en-v1.5": "bgeB",
+        "BAAI/bge-large-en-v1.5": "bgeL",
+        "thenlper/gte-large": "gteL",
+        "nlpaueb/legal-bert-base-uncased": "LbertB",
+        "nlpaueb/legal-bert-small-uncased": "LbertS",
+    },
+    "reranker": {
+        "rerank-english-v3.0": "coh3",
+        "rerank-2-lite": "voy2l",
+        "cross-encoder/ms-marco-MiniLM-L-6-v2": "miniLM",
+        "BAAI/bge-reranker-base": "bgeB",
+        "BAAI/bge-reranker-large": "bgeL",
+        # Add None mapping for placeholder
+        None: "X"
+    },
+    "chunking": {
+        "rcts": "rcts",
+        "naive": "naive",
+        "summary_rcts": "s-rcts",
+        "summary_naive": "s-naive",
+    },
+    "method": {
+        "baseline": "base",
+        "hybrid": "hybrid",
+    }
+}
+
+DEFAULT_ABBR = "unk"
+NONE_ABBR = "X"  # Placeholder for when a component (like reranker) is not used
+
 
 # --- Constants ---
 
@@ -20,6 +53,27 @@ DEFAULT_K = 64
 
 
 # --- Helper Functions ---
+
+
+def get_abbreviation(value: str | None, category: str) -> str:
+    """Gets the abbreviation for a given value and category."""
+    if value is None and category == "reranker":
+        return NONE_ABBR  # Special handling for optional reranker
+
+    category_map = ABBREVIATIONS.get(category)
+    if not category_map:
+        print(f"Warning: Unknown abbreviation category '{category}'. Using default '{DEFAULT_ABBR}'.")
+        return DEFAULT_ABBR
+
+    abbr = category_map.get(value)  # type: ignore
+    if abbr is None:
+        # Check again explicitly for None in case it wasn't the reranker category
+        if value is None:
+            return NONE_ABBR
+        # Value is not None, but not found in map
+        print(f"Warning: Unknown value '{value}' for category '{category}'. Using default '{DEFAULT_ABBR}'.")
+        return DEFAULT_ABBR
+    return abbr
 
 
 def get_k_value(row):

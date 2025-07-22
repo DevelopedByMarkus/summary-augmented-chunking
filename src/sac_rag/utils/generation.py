@@ -10,7 +10,7 @@ import torch
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from openai import AsyncOpenAI, APIError
-from src.sac_rag.utils.credentials import credentials
+from sac_rag.utils.credentials import credentials
 import cohere
 
 # --- Setup Logger ---

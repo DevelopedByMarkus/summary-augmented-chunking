@@ -7,7 +7,6 @@ import random
 from collections.abc import Callable, Coroutine
 from enum import Enum
 from typing import Any, Literal, cast, Dict, List
-import re
 
 import anthropic
 import cohere
@@ -24,23 +23,14 @@ from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, computed_field
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
-from src.sac_rag.utils.credentials import credentials
+from sac_rag.utils.credentials import credentials
+from sac_rag.utils.utils import sanitize_filename
 
 logger = logging.getLogger(__name__)
 
 # --- Globals ---
 local_model_cache: Dict[str, Any] = {}
 local_reranker_cache: Dict[str, Any] = {}
-
-
-# Define characters typically illegal in Windows filenames and replacement
-ILLEGAL_FILENAME_CHARS = r'[\\/:*?"<>|]'
-REPLACEMENT_CHAR = '_'
-
-
-def sanitize_filename(filename: str) -> str:
-    """Replaces characters illegal in Windows filenames with underscores."""
-    return re.sub(ILLEGAL_FILENAME_CHARS, REPLACEMENT_CHAR, filename)
 
 
 # AI Types
