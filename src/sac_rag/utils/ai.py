@@ -2,6 +2,8 @@ import asyncio
 import hashlib
 import logging
 import os
+from pathlib import Path
+
 import torch
 import random
 from collections.abc import Callable, Coroutine
@@ -139,8 +141,8 @@ class AIRerankModel(BaseModel):
                 return float('inf')
 
 
-os.makedirs("./data/cache", exist_ok=True)
-cache = dc.Cache("./data/cache/ai_cache.db")
+os.makedirs(f"{Path.cwd()}/data/cache", exist_ok=True)
+cache = dc.Cache(f"{Path.cwd()}/data/cache/ai_cache.db")
 
 RATE_LIMIT_RATIO = 0.95
 
@@ -858,7 +860,7 @@ async def generate_document_summary(
         summary_prompt_template: str,
         prompt_target_char_length: int,
         truncate_char_length: int,
-        summaries_output_dir_base: str,
+        summaries_output_dir_base: str | Path,
         num_ratelimit_retries: int = 5,
         backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 60) + random.uniform(0, 1)
 ) -> str:

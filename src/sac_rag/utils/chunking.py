@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List, Optional, cast  # Added Optional
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -90,7 +91,7 @@ async def get_chunks(  # Made async
         summary_prompt_template = cast(Optional[str], kwargs.get("summary_prompt_template"))
         prompt_target_char_length = cast(int, kwargs.get("prompt_target_char_length", 150))
         summary_truncation_length = cast(int, kwargs.get("summary_truncation_length", 170))
-        summaries_base_dir = "./data/summaries"
+        summaries_base_dir = Path.cwd() / "data" / "summaries"
 
         if not summarization_model or not summary_prompt_template:
             logger.error(

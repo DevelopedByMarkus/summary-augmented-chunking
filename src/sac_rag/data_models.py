@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 import os
+from pathlib import Path
 
 from pydantic import BaseModel, computed_field, model_validator
 from typing_extensions import Self
@@ -32,9 +33,9 @@ class Snippet(BaseModel):
     @property
     def answer(self) -> str:
         # Logic to find the actual file path (original or sanitized) for reading
-        original_full_path = f"./data/corpus/{self.file_path}"
+        original_full_path = f"{Path.cwd()}/data/corpus/{self.file_path}"
         sanitized_file_path = sanitize_filename(self.file_path)
-        sanitized_full_path = f"./data/corpus/{sanitized_file_path}"
+        sanitized_full_path = f"{Path.cwd()}/data/corpus/{sanitized_file_path}"
 
         if os.path.exists(original_full_path):
             path_to_read = original_full_path
@@ -52,26 +53,6 @@ class Snippet(BaseModel):
 
         with open(path_to_read, encoding='utf-8') as f:
             return f.read()[self.span[0] : self.span[1]]
-
-
-def validate_snippet_list(snippets: Sequence[Snippet]) -> None:
-    snippets_by_file_path: dict[str, list[Snippet]] = {}
-    for snippet in snippets:
-        if snippet.file_path not in snippets_by_file_path:
-            snippets_by_file_path[snippet.file_path] = [snippet]
-        else:
-            snippets_by_file_path[snippet.file_path].append(snippet)
-
-    for _file_path, snippets_list in snippets_by_file_path.items(): # Renamed variable
-        # Sort snippets by start span before checking for overlap
-        sorted_snippets = sorted(snippets_list, key=lambda x: x.span[0])
-        for i in range(1, len(sorted_snippets)):
-            # Allow spans to touch (end == start), but not overlap (end > start)
-            if sorted_snippets[i - 1].span[1] > sorted_snippets[i].span[0]:
-                raise ValueError(
-                    f"Spans are not disjoint for file '{_file_path}'! "
-                    f"{sorted_snippets[i - 1].span} VS {sorted_snippets[i].span}"
-                )
 
 
 def validate_snippet_list(snippets: Sequence[Snippet]) -> None:

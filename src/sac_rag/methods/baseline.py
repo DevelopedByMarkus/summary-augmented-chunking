@@ -1,9 +1,10 @@
 import os
 import sqlite3
 import struct
-from typing import Literal, cast, List, Optional, Dict  # Added Optional
-import asyncio  # Added for gathering summary tasks
-import logging  # Added for logging
+from typing import Literal, cast, List, Optional, Dict
+import asyncio
+import logging
+from pathlib import Path
 
 import sqlite_vec
 from pydantic import BaseModel
@@ -19,14 +20,14 @@ from src.sac_rag.utils.ai import (
     AIEmbeddingModel,
     AIEmbeddingType,
     AIRerankModel,
-    AIModel,  # Added AIModel for summary
+    AIModel,
     ai_embedding,
     ai_rerank,
-    generate_document_summary  # Import the new summary generation function
+    generate_document_summary
 )
-from sac_rag.utils.chunking import Chunk, get_chunks  # get_chunks is now async
+from sac_rag.utils.chunking import Chunk, get_chunks
 
-logger = logging.getLogger(__name__)  # Setup logger
+logger = logging.getLogger(__name__)
 
 
 def serialize_f32(vector: list[float]) -> bytes:
@@ -76,14 +77,17 @@ class BaselineRetrievalMethod(RetrievalMethod):
     # This list maps sqlite rowid (implicit index) to metadata
     embedding_infos: List[EmbeddingInfo] | None
     sqlite_db: sqlite3.Connection | None
-    sqlite_db_file_path: str | None
+    sqlite_db_file_path: str | Path | None
 
-    def __init__(self, retrieval_strategy: RetrievalStrategy):
+    def __init__(self, retrieval_strategy: RetrievalStrategy, cache_dir: str | Path | None = None):
         self.retrieval_strategy = retrieval_strategy
         self.documents = {}
         self.embedding_infos = None
         self.sqlite_db = None
-        self.sqlite_db_file_path = None
+        self.cache_dir = Path.cwd() / "data" / "cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # The filename is now constructed from the configured, absolute path
+        self.sqlite_db_file_path = self.cache_dir / f"baseline_{os.getpid()}.db"
 
     async def cleanup(self) -> None:
         if self.sqlite_db is not None:
@@ -180,7 +184,6 @@ class BaselineRetrievalMethod(RetrievalMethod):
 
         # 3. Store embeddings and metadata in SQLite-Vec
         if self.sqlite_db is None:
-            self.sqlite_db_file_path = f"./data/cache/baseline_{os.getpid()}.db"
             if os.path.exists(self.sqlite_db_file_path):
                 os.remove(self.sqlite_db_file_path)
             self.sqlite_db = sqlite3.connect(self.sqlite_db_file_path)

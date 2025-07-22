@@ -1,3 +1,5 @@
+from pathlib import Path
+
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:
@@ -22,5 +24,5 @@ class Credentials(BaseModel):
     dropbox: DropboxCredentials
 
 
-with open("./credentials/credentials.toml", "rb") as credentials_file:
+with open(f"{Path.cwd()}/credentials/credentials.toml", "rb") as credentials_file:
     credentials = Credentials.model_validate(tomllib.load(credentials_file))
