@@ -14,7 +14,7 @@ from .src.evaluation import evaluate
 from sac_rag.data_models import Document as SacRagDocument
 from sac_rag.utils.config_loader import load_strategy_from_file
 from sac_rag.utils.retriever_factory import create_retriever
-from sac_rag.utils.generate import create_generator
+from sac_rag.utils.generation import create_generator
 
 _license_cache = {}
 BASE_PROMPT_FILENAME = "claude_prompt.txt"  # refined prompt, or could be "base_prompt.txt"

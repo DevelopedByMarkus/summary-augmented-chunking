@@ -17,7 +17,7 @@ from sac_rag.utils.ai import AIEmbeddingModel
 from sac_rag.utils.credentials import credentials
 from sac_rag.utils.config_loader import load_strategy_from_file
 from sac_rag.utils.retriever_factory import create_retriever
-from sac_rag.utils.generate import create_generator
+from sac_rag.utils.generation import create_generator
 
 
 async def main(args):
