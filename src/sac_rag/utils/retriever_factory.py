@@ -1,10 +1,10 @@
 from typing import Union
 from sac_rag.data_models import RetrievalMethod
 from sac_rag.methods.baseline import BaselineRetrievalMethod, RetrievalStrategy as BaselineConfig
-from sac_rag.methods.hypa import HypaRetrievalMethod, HypaStrategy as HypaConfig
+from sac_rag.methods.hybrid import HybridRetrievalMethod, HybridStrategy
 
 # A type hint for any of our strategy configuration models
-AnyRetrievalConfig = Union[BaselineConfig, HypaConfig]
+AnyRetrievalConfig = Union[BaselineConfig, HybridStrategy]
 
 
 def create_retriever(strategy_config: AnyRetrievalConfig) -> RetrievalMethod:
@@ -24,9 +24,9 @@ def create_retriever(strategy_config: AnyRetrievalConfig) -> RetrievalMethod:
         print("Factory: Creating BaselineRetrievalMethod...")
         return BaselineRetrievalMethod(retrieval_strategy=strategy_config)
 
-    elif isinstance(strategy_config, HypaConfig):
-        print("Factory: Creating HypaRetrievalMethod...")
-        return HypaRetrievalMethod(strategy=strategy_config)
+    elif isinstance(strategy_config, HybridStrategy):
+        print("Factory: Creating HybridRetrievalMethod...")
+        return HybridRetrievalMethod(strategy=strategy_config)
 
     else:
         # This case should ideally not be hit if the config loader works correctly,

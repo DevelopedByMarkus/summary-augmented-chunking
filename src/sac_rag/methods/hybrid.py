@@ -38,9 +38,9 @@ logger = logging.getLogger(__name__)
 
 
 # --- Configuration Model ---
-class HypaStrategy(BaseModel):
-    """Configuration specific to the HyPA retrieval method."""
-    method_name: str = "hypa"
+class HybridStrategy(BaseModel):
+    """Configuration specific to the Hybrid retrieval method."""
+    method_name: str = "hybrid"
     # Updated Literal to include new summary strategies
     chunk_strategy_name: Literal["naive", "rcts", "summary_naive", "summary_rcts"] = "rcts"
     chunk_size: int  # For summary strategies, this is the TOTAL target length
@@ -105,16 +105,16 @@ def fuse_results(results_dict: Dict[str, List[NodeWithScore]], similarity_top_k:
     return reranked_nodes[:similarity_top_k]
 
 
-# --- HyPA Retrieval Method Implementation ---
-class HypaRetrievalMethod(RetrievalMethod):
-    strategy: HypaStrategy
+# --- Hybrid Retrieval Method Implementation ---
+class HybridRetrievalMethod(RetrievalMethod):
+    strategy: HybridStrategy
     documents: Dict[str, BenchmarkDocument]
-    nodes: List[TextNode] | None  # Explicitly TextNode for HyPA
+    nodes: List[TextNode] | None  # Explicitly TextNode for Hybrid
     vector_index: VectorStoreIndex | None
     bm25_retriever: BM25Retriever | None
     _llama_embed_model: BaseEmbedding | None = None
 
-    def __init__(self, strategy: HypaStrategy):
+    def __init__(self, strategy: HybridStrategy):
         self.strategy = strategy
         self.documents = {}
         self.nodes = None  # Initialize as None
@@ -140,7 +140,7 @@ class HypaRetrievalMethod(RetrievalMethod):
                 return self._llama_embed_model
 
         print(
-            f"HyPA: Instantiating LlamaIndex embedding model for: {self.strategy.embedding_model.company} / {self.strategy.embedding_model.model}")
+            f"Hybrid: Instantiating LlamaIndex embedding model for: {self.strategy.embedding_model.company} / {self.strategy.embedding_model.model}")
         model_config = self.strategy.embedding_model
         embed_model: BaseEmbedding
 
@@ -159,7 +159,7 @@ class HypaRetrievalMethod(RetrievalMethod):
         elif model_config.company == 'voyageai':
             embed_model = VoyageEmbedding(model_name=model_config.model, voyage_api_key=os.getenv("VOYAGEAI_API_KEY"))
         else:
-            raise ValueError(f"Unsupported embedding company in HypaStrategy: {model_config.company}")
+            raise ValueError(f"Unsupported embedding company in HybridStrategy: {model_config.company}")
 
         self._llama_embed_model = embed_model
         return embed_model
@@ -170,7 +170,7 @@ class HypaRetrievalMethod(RetrievalMethod):
 
     async def sync_all_documents(self) -> None:
         """Process documents, create nodes with cached embeddings, build indices."""
-        print(f"HyPA: Calculating chunks using strategy '{self.strategy.chunk_strategy_name}'...")
+        print(f"Hybrid: Calculating chunks using strategy '{self.strategy.chunk_strategy_name}'...")
 
         # Prepare kwargs for get_chunks
         chunking_params = {
@@ -195,10 +195,10 @@ class HypaRetrievalMethod(RetrievalMethod):
         for chunk_list_for_doc in results_of_chunking_tasks:
             all_chunks.extend(chunk_list_for_doc)
 
-        print(f"HyPA: Created {len(all_chunks)} chunks.")
+        print(f"Hybrid: Created {len(all_chunks)} chunks.")
 
         if not all_chunks:
-            print("HyPA: No chunks created, skipping index creation.")
+            print("Hybrid: No chunks created, skipping index creation.")
             self.nodes = []  # Ensure nodes is initialized as empty list
             return
 
@@ -206,7 +206,7 @@ class HypaRetrievalMethod(RetrievalMethod):
         chunk_contents = [chunk.content for chunk in all_chunks]  # These contents include summaries
         model_config = self.strategy.embedding_model
 
-        pbar = tqdm(total=len(chunk_contents), desc="HyPA Embeddings", ncols=100)
+        pbar = tqdm(total=len(chunk_contents), desc="Hybrid Embeddings", ncols=100)
 
         def progress_callback():
             pbar.update(1)
@@ -221,11 +221,11 @@ class HypaRetrievalMethod(RetrievalMethod):
 
         if len(embeddings) != len(all_chunks):
             logger.error(
-                f"HyPA Critical Error: Mismatch between chunks ({len(all_chunks)}) and embeddings ({len(embeddings)}) count.")
-            raise ValueError(f"HyPA Error: Mismatch between number of chunks and obtained embeddings.")
+                f"Hybrid Critical Error: Mismatch between chunks ({len(all_chunks)}) and embeddings ({len(embeddings)}) count.")
+            raise ValueError(f"Hybrid Error: Mismatch between number of chunks and obtained embeddings.")
 
         # 2. Create LlamaIndex TextNodes with pre-computed embeddings
-        print("HyPA: Creating LlamaIndex TextNodes with pre-computed embeddings...")
+        print("Hybrid: Creating LlamaIndex TextNodes with pre-computed embeddings...")
         self.nodes = []  # Initialize as list of TextNode
         for i, (chunk, embedding) in enumerate(zip(all_chunks, embeddings)):
             # Create a unique node ID based on file and span of original content
@@ -247,33 +247,33 @@ class HypaRetrievalMethod(RetrievalMethod):
                 embedding=embedding,
             )
             self.nodes.append(node)
-        print(f"HyPA: Created {len(self.nodes)} TextNodes with embeddings.")
+        print(f"Hybrid: Created {len(self.nodes)} TextNodes with embeddings.")
 
         # 3. Set the global LlamaIndex embedding model (likely needed for query time)
-        print("HyPA: Setting global LlamaIndex embedding model (for query time)...")
+        print("Hybrid: Setting global LlamaIndex embedding model (for query time)...")
         Settings.embed_model = self._get_llama_embed_model()
 
         # 4. Build In-Memory Vector Index using the TextNodes with pre-computed embeddings
-        print("HyPA: Building vector index from nodes with pre-computed embeddings...")
+        print("Hybrid: Building vector index from nodes with pre-computed embeddings...")
         self.vector_index = VectorStoreIndex(  # Pass self.nodes directly
             self.nodes,  # type: ignore
             show_progress=True,  # Changed to True
         )
-        print("HyPA: Vector index built.")
+        print("Hybrid: Vector index built.")
 
         # 5. Build BM25 Retriever using the TextNodes
-        print("HyPA: Building BM25 retriever...")
+        print("Hybrid: Building BM25 retriever...")
         self.bm25_retriever = BM25Retriever.from_defaults(
             nodes=self.nodes,  # type: ignore
             similarity_top_k=self.strategy.bm25_top_k
         )
-        print("HyPA: BM25 retriever built.")
+        print("Hybrid: BM25 retriever built.")
 
     async def query(self, query: str) -> QueryResponse:
-        """Perform HyPA retrieval: vector + bm25 + fusion + optional reranking."""
+        """Perform Hybrid retrieval: vector + bm25 + fusion + optional reranking."""
         if self.vector_index is None or self.bm25_retriever is None or self.nodes is None:
             if self.nodes is not None and not self.nodes:
-                print("HyPA Query: No nodes available for querying (list is empty). Returning empty response.")
+                print("Hybrid Query: No nodes available for querying (list is empty). Returning empty response.")
                 return QueryResponse(retrieved_snippets=[])
             raise ValueError("Indices not synchronized. Call sync_all_documents first.")
 
@@ -299,7 +299,7 @@ class HypaRetrievalMethod(RetrievalMethod):
         final_nodes = fused_nodes
         if self.strategy.rerank_model and self.strategy.rerank_top_k is not None and fused_nodes:
             logger.debug(
-                f"HyPA: Reranking {len(fused_nodes)} fused nodes with {self.strategy.rerank_model.company}/{self.strategy.rerank_model.model} (top_k={self.strategy.rerank_top_k})...")
+                f"Hybrid: Reranking {len(fused_nodes)} fused nodes with {self.strategy.rerank_model.company}/{self.strategy.rerank_model.model} (top_k={self.strategy.rerank_top_k})...")
             texts_to_rerank = [node.get_content() for node in fused_nodes]  # Content includes summary
 
             reranked_indices = await ai_rerank(
@@ -338,10 +338,10 @@ class HypaRetrievalMethod(RetrievalMethod):
                     missing_meta = [item for item in ["file_path", "original_span_start", "original_span_end"] if
                                     node.metadata.get(item) is None]
                     logger.warning(
-                        f"HyPA WARNING: Node {node.node_id} missing metadata: {', '.join(missing_meta)}. Skipping.")
+                        f"Hybrid WARNING: Node {node.node_id} missing metadata: {', '.join(missing_meta)}. Skipping.")
             else:
                 logger.warning(
-                    f"HyPA WARNING: Retrieved node {node.node_id} is not a TextNode but {type(node)}. Skipping.")  # type: ignore
+                    f"Hybrid WARNING: Retrieved node {node.node_id} is not a TextNode but {type(node)}. Skipping.")  # type: ignore
 
         return QueryResponse(retrieved_snippets=retrieved_snippets)
 
@@ -353,4 +353,4 @@ class HypaRetrievalMethod(RetrievalMethod):
         self.bm25_retriever = None
         self._llama_embed_model = None
         # Settings.embed_model = None # Optional: Reset LlamaIndex global settings
-        print("HyPA: Cleanup complete.")
+        print("Hybrid: Cleanup complete.")

@@ -1,6 +1,6 @@
 import re
 from src.sac_rag.methods.baseline import RetrievalStrategy as BaselineStrategy
-from src.sac_rag.methods.hypa import HypaStrategy
+from src.sac_rag.methods.hybrid import HybridStrategy
 
 # --- Abbreviation Mappings ---
 ABBREVIATIONS = {
@@ -29,7 +29,7 @@ ABBREVIATIONS = {
     },
     "method": {
         "baseline": "base",
-        "hypa": "hypa",
+        "hybrid": "hybrid",
     }
 }
 
@@ -76,7 +76,7 @@ def generate_filename(index: int, retrieval_strategy, row: dict) -> str:
             chunk_strategy_name = getattr(retrieval_strategy.chunking_strategy, 'strategy_name', None)
             chunk_size = getattr(retrieval_strategy.chunking_strategy, 'chunk_size', None)
 
-        elif isinstance(retrieval_strategy, HypaStrategy):
+        elif isinstance(retrieval_strategy, HybridStrategy):
             chunk_strategy_name = getattr(retrieval_strategy, 'chunk_strategy_name', None)
             chunk_size = getattr(retrieval_strategy, 'chunk_size', None)
 

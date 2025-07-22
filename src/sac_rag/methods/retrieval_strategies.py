@@ -2,7 +2,7 @@ from typing import List, Union
 
 from src.sac_rag.methods.baseline import ChunkingStrategy, RetrievalStrategy as BaselineStrategy
 from src.sac_rag.utils.ai import AIEmbeddingModel, AIRerankModel, AIModel
-from src.sac_rag.methods.hypa import HypaStrategy
+from src.sac_rag.methods.hybrid import HybridStrategy
 
 # --- Default Summarization Settings ---
 DEFAULT_SUMMARIZATION_MODEL = AIModel(company="openai", model="gpt-4o-mini")
@@ -81,7 +81,7 @@ for chunk_strategy in chunk_strategies:
 
 # --- HyPA Strategy Definitions ---
 
-HYPA_STRATEGIES: list[HypaStrategy] = []
+HYPA_STRATEGIES: list[HybridStrategy] = []
 for chunk_strategy in chunk_strategies:
     for embed_model in embed_strategies:
         for rerank_model in rerank_models:
@@ -101,7 +101,7 @@ for chunk_strategy in chunk_strategies:
                     current_bm25_top_k = max(20, current_fusion_top_k * 3)
 
                 HYPA_STRATEGIES.append(
-                    HypaStrategy(
+                    HybridStrategy(
                         chunk_strategy_name=chunk_strategy.strategy_name,
                         chunk_size=chunk_strategy.chunk_size,
                         chunk_overlap_ratio=chunk_strategy.chunk_overlap_ratio,
@@ -120,7 +120,7 @@ for chunk_strategy in chunk_strategies:
 
 
 # --- Combine all strategies to be tested ---
-ALL_RETRIEVAL_STRATEGIES: List[Union[BaselineStrategy, HypaStrategy]] = []
+ALL_RETRIEVAL_STRATEGIES: List[Union[BaselineStrategy, HybridStrategy]] = []
 ALL_RETRIEVAL_STRATEGIES.extend(BASELINE_STRATEGIES)
 # ALL_RETRIEVAL_STRATEGIES.extend(HYPA_STRATEGIES)
 
