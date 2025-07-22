@@ -121,7 +121,7 @@ def load_corpus_for_dataset(dataset_id: str, corpus_base_path: str = "./data/cor
     Loads all documents from the specified dataset's subdirectory within the corpus.
     Returns a list of legalbenchrag.benchmark_types.Document objects.
     """
-    from src.sac_rag.data_models import Document  # Local import to avoid circular dependency if this file grows
+    from sac_rag.data_models import Document  # Local import to avoid circular dependency if this file grows
 
     dataset_corpus_path = os.path.join(corpus_base_path, dataset_id)
     corpus_docs = []

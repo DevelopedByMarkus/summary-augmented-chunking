@@ -306,15 +306,15 @@ if __name__ == "__main__":
         help="One or more paths to retrieval strategy JSON config files."
     )
     parser.add_argument(
-        "--max-tests-per-benchmark", type=int, default=194,
-        help="Maximum number of tests to sample from each sub-benchmark (e.g., cuad, maud)."
+        "--max-tests-per-benchmark", "-m", type=int, default=194,
+        help="Maximum number of tests to sample from each sub-benchmark (e.g., cuad, maud). Set a low number for debug."
     )
     parser.add_argument(
         "--sort-by-document", action="store_true",
         help="Enable sorting by document to potentially speed up ingestion during testing."
     )
     parser.add_argument(
-        "--results-dir", type=str, default="./results/legalbench_rag",
+        "--results-dir", type=str, default="./results/legalbenchrag",
         help="Base directory to save the output run folder."
     )
 

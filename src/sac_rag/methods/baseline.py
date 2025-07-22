@@ -10,13 +10,13 @@ import sqlite_vec
 from pydantic import BaseModel
 from tqdm import tqdm
 
-from src.sac_rag.data_models import (
+from sac_rag.data_models import (
     Document,
     QueryResponse,
     RetrievalMethod,
     RetrievedSnippet,
 )
-from src.sac_rag.utils.ai import (
+from sac_rag.utils.ai import (
     AIEmbeddingModel,
     AIEmbeddingType,
     AIRerankModel,
