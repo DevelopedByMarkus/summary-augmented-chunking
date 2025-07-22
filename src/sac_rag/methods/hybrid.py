@@ -38,9 +38,9 @@ logger = logging.getLogger(__name__)
 
 
 # --- Configuration Model ---
-class HybridStrategy(BaseModel):
+class HybridStrategy(BaseModel):  # TODO: Refactor pydantic model so that it has the same structure as baseline!
     """Configuration specific to the Hybrid retrieval method."""
-    method_name: str = "hybrid"
+    strategy_type: str = "hybrid"
     # Updated Literal to include new summary strategies
     chunk_strategy_name: Literal["naive", "rcts", "summary_naive", "summary_rcts"] = "rcts"
     chunk_size: int  # For summary strategies, this is the TOTAL target length

@@ -23,11 +23,8 @@ def load_strategy_from_file(filepath: str) -> AnyRetrievalStrategy:
 
     strategy_type = data.get("strategy_type")
 
-    # Add 'method_name' to data if it's HybridStrategy, which requires it
     if strategy_type == "hybrid":
         model = HybridStrategy
-        if "method_name" not in data:
-            data["method_name"] = "hybrid" # Default value
     elif strategy_type == "baseline":
         model = BaselineStrategy
     else:
