@@ -7,9 +7,9 @@ import asyncio
 from datetime import datetime
 
 from .src.tasks import TASKS
-from .src.utils import write_summary_results, write_verbose_output
+from .src.utils import load_corpus_for_dataset, generate_prompts_with_rag_context, write_summary_results,\
+    write_verbose_output
 from .src.evaluation import evaluate
-from .src.retrieval import load_corpus_for_dataset, generate_prompts_with_rag_context
 
 from sac_rag.data_models import Document as SacRagDocument
 from sac_rag.utils.config_loader import load_strategy_from_file

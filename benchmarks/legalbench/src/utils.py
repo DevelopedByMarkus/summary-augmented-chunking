@@ -114,3 +114,89 @@ def write_summary_results(results_dir, model_name, retrieval_strategy, all_task_
                 if 'result_or_error' in fieldnames:
                     row_data['result_or_error'] = str(task_result)
             writer.writerow(row_data)
+
+
+def load_corpus_for_dataset(dataset_id: str, corpus_base_path: str = "./data/corpus") -> list:
+    """
+    Loads all documents from the specified dataset's subdirectory within the corpus.
+    Returns a list of legalbenchrag.benchmark_types.Document objects.
+    """
+    from src.sac_rag.data_models import Document  # Local import to avoid circular dependency if this file grows
+
+    dataset_corpus_path = os.path.join(corpus_base_path, dataset_id)
+    corpus_docs = []
+    if not os.path.isdir(dataset_corpus_path):
+        print(f"Warning: Corpus directory not found for dataset '{dataset_id}' at '{dataset_corpus_path}'.")
+        return []
+
+    print(f"Loading corpus documents from: {dataset_corpus_path}")
+    for filename in os.listdir(dataset_corpus_path):
+        # Assuming documents are text files, adjust if other extensions are used (e.g., .json, .md)
+        if filename.endswith((".txt", ".md", ".json")):  # Add more extensions if needed
+            file_path_in_corpus = os.path.join(dataset_id, filename)  # Relative path for Document object
+            full_file_path = os.path.join(dataset_corpus_path, filename)
+            try:
+                with open(full_file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                if content.strip():  # Ensure content is not just whitespace
+                    corpus_docs.append(Document(file_path=file_path_in_corpus, content=content))
+                else:
+                    print(f"Warning: Document '{full_file_path}' is empty. Skipping.")
+            except Exception as e:
+                print(f"Error reading document '{full_file_path}': {e}. Skipping.")
+    print(f"Loaded {len(corpus_docs)} documents for dataset '{dataset_id}'.")
+    return corpus_docs
+
+
+PROMPT_TEMPLATE_WITH_CONTEXT = """You are a legal expert. Please answer the following query considering the provided context information.
+
+[Relevant Context Snippets Start]
+{formatted_contexts}
+[Relevant Context Snippets End]
+
+[Original Query Start]
+{original_query_from_base_template}
+[Original Query End]
+
+Answer:
+"""
+
+
+def generate_prompts_with_rag_context(
+        base_prompt_template_text: str,  # This is the content of base_prompt.txt or claude_prompt.txt
+        query_text_from_dataset: str,  # This is data_df['text'] or similar
+        retrieved_context_strings: list[str]  # List of strings, each a retrieved snippet's content
+) -> str:
+    """
+    Generates a final prompt string by incorporating retrieved contexts into a template
+    that wraps the original query derived from base_prompt_template_text and query_text_from_dataset.
+    """
+
+    # Step 1: Construct the "original query" part.
+    # The base_prompt_template_text usually has a placeholder for the specific query/text from the dataset.
+    # Let's assume it's {text} or similar. We need to fill that first.
+    # This logic should mirror what your existing generate_prompts(prompt_template, data_df) does
+    # for a single item before RAG.
+    # For simplicity, assuming base_prompt_template_text might contain "{text}"
+    # or is structured such that query_text_from_dataset fits into it.
+    # If base_prompt_template_text IS the query structure itself:
+    original_query_filled = base_prompt_template_text.replace("{text}", query_text_from_dataset)
+    # If base_prompt_template_text is more of a system message and query_text_from_dataset is the actual user query:
+    # original_query_filled = f"{base_prompt_template_text}\n\nQuery: {query_text_from_dataset}" (Adjust as needed)
+
+    # Step 2: Format the retrieved contexts.
+    if not retrieved_context_strings:
+        formatted_contexts = "No relevant context snippets were retrieved."
+    else:
+        # Enumerate contexts for clarity in the prompt
+        formatted_contexts = "\n\n".join(
+            [f"Snippet {i + 1}: \n{context}" for i, context in enumerate(retrieved_context_strings)]
+        )
+
+    # Step 3: Fill the main RAG prompt template
+    final_llm_prompt = PROMPT_TEMPLATE_WITH_CONTEXT.format(
+        formatted_contexts=formatted_contexts,
+        original_query_from_base_template=original_query_filled
+    )
+
+    return final_llm_prompt
