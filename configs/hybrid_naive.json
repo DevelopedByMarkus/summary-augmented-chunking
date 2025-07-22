@@ -1,0 +1,19 @@
+{
+  "strategy_type": "hybrid",
+  "chunk_strategy_name": "naive",
+  "chunk_size": 1000,
+  "chunk_overlap_ratio": 0.1,
+  "summary_model": null,
+  "summary_prompt_template": null,
+  "prompt_target_char_length": 200,
+  "summary_truncation_length": 220,
+  "embedding_model": {
+    "company": "openai",
+    "model": "text-embedding-3-small"
+  },
+  "embedding_top_k": 128,
+  "bm25_top_k": 128,
+  "fusion_top_k": 64,
+  "rerank_model": null,
+  "rerank_top_k": 4
+}

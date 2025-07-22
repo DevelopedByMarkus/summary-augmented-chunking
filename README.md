@@ -1,76 +1,56 @@
-# legalbenchrag
+# Summary Augmented Chunking for RAG (SAC-RAG)
 
-`legalbenchrag` is a project for evaluating and improving Retrieval-Augmented Generation (RAG) systems in the legal domain.
+**Summary Augmented Chunking for RAG (SAC-RAG)**, is a project designed to improve the reliability of Retrieval-Augmented Generation (RAG) systems, particularly in the legal domain.
 
-The current findings identify a critical failure in standard RAG pipelines—the retrieval of context from entirely incorrect documents—and introduces the **Percentage of Foreign Documents (PFD)** metric to quantify this error.
+Standard RAG pipelines often suffer from a critical failure mode called **inter-document error**, where the retrieval component selects context from entirely incorrect source documents. This project introduces a metric, the **Percentage of Foreign Documents (PFD)**, to quantify this specific failure.
 
-To address this, the project proposes **Summary Augmented Chunking (SAC)**, a novel method that enriches text chunks with document-level summaries to improve retrieval accuracy.
+The core contribution is **SAC**, a simple yet effective chunking method. Before chunking, SAC generates a summary of the parent document and prepends it to each chunk. This technique enriches each text chunk with essential document-level context, making the retrieval process more accurate.
 
-The project includes three distinct benchmarks for evaluation:
-1.  **legalbench-RAG**: A retrieval-focused benchmark to measure the performance of different chunking and retrieval strategies using metrics like precision, recall, and PFD.
-2. **legalbench**: An end-to-end evaluation framework for legal tasks, but not tailored for evaluating RAG applications.
-3.  **ALRAG**: An end-to-end benchmark to assess the impact of retrieval quality on the final generated answers in a legal question-answering context.
+Our evaluations show that SAC significantly reduces the PFD and boosts retrieval precision and recall compared to baseline methods across several benchmarks. One of them is **ALRAG**, a new end-to-end benchmark specifically tailored for legal RAG systems.
 
-## Installation and Setup
+## Installation
 
-- To use the code it is first necessary to provide the API-keys for the used API models. This can be done by creating a `credentials.toml` file in the `credentials/` directory, following the example provided in `credentials/credentials.example.toml`.
-- Secondly, it is best to setup a virtual environment and install the dependencies via the requirements.txt file. Durch development python 3.10 was used.
-- `setup.py`: Basic package setup for `legalbenchrag`.
-- `data/download_dropbox_data.py`: Script to download the necessary legalbench corpus and benchmark files.
-- The corpus must be stored under `data/corpus`, the benchmark files for `legalbenchrag` and `alqa` under `data/benchmarks/`, and the benchmark files for `alqa` under `data/benchmarks/alqa`.
-- The summaries and embeddings will be cached in a sqlite database to save time and cost in subsequent runs.
+To use the framework, you need to install the required dependencies.
+
+1. Create an anaconda environment (recommended):
+   ```bash
+   conda create -n sac_rag python=3.10
+   conda activate sac_rag
+   ```
+2. Install the required packages:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Run the `setup.py` script to setup the `sac_rag` package.
+4. Setup the credentials for the AI models you want to use. Copy the `credentials/credentials.example.toml` file to `credentials/credentials.toml` and fill in your API keys for the AI services you plan to use.
 
 ## Codebase Overview
 
-This overview provides a top-down look at the project structure, focusing on the main benchmarking pipelines.
+The project is organized into two main parts: a standalone retrieval library located in `src/sac_rag` and a set of evaluation benchmarks in the `benchmarks/` directory that use this library to produce the experimental results.
 
-### `legalbenchrag/` — The Core Retrieval Benchmark (legalbench-RAG)
+### Core Library: `src/sac_rag`
 
-This is the main package for the retrieval-focused benchmark. It evaluates how well different strategies retrieve the correct text snippets.
+This directory contains the core, reusable RAG retrieval system. It is designed to be a standalone library that can be integrated into other projects.
 
--   `benchmark.py`: The **primary entry point** for running the retrieval benchmark. It loads the corpus and benchmark data, iterates through all defined retrieval strategies, and executes the evaluation.
--   `run_benchmark.py`: Contains the core evaluation logic. The `run_benchmark` function takes a set of queries, a corpus, and a retrieval method, then calculates precision, recall, and F1-score for the retrieved snippets.
--   `benchmark_types.py`: Defines the essential Pydantic data models used throughout the project, such as `Document`, `Snippet`, `QAGroundTruth`, and the `RetrievalMethod` abstract base class.
+*   `utils/retriever_factory.py`: This is the primary entry point for using the library. The `create_retriever` function takes a JSON configuration file and constructs the appropriate retrieval pipeline (currently either `Baseline` or `Hybrid`).
+*   `utils/chunking.py`: This module is the heart of the SAC methodology. The `get_chunks` function implements the various chunking strategies. For `summary_naive` and `summary_rcts` strategies, it calls the summarization logic before prepending the summary to each chunk.
+*   `methods/`: This package contains the different retrieval implementations.
+    *   `baseline.py`: Implements a standard vector-search RAG pipeline.
+    *   `hybrid.py`: Implements a hybrid retrieval approach combining sparse (BM25) and dense (vector) search.
+*   `utils/ai.py`: This utility module manages all interactions with external or local AI models. It handles API calls or local production for embeddings, reranking, and, crucially, the `generate_document_summary` function which produces the summaries used in the SAC method. It also includes caching into a sqlite database (`data/cache/ai_cache.db/cache.db`) for all AI calls to improve performance.
+*   `data_models.py`: Defines the core Pydantic data structures used throughout the library, such as `Document`, `Snippet`, `RetrievedSnippet`, and `QueryResponse`.
+*   `utils/config_loader.py`: A helper to load and validate strategy configurations from JSON files into Pydantic models.
 
--   **`methods/`**: Implements the different retrieval strategies.
-    -   `baseline.py`: Implements the `BaselineRetrievalMethod`, which uses a vector database (`sqlite-vec`) for retrieval. It supports various chunking strategies, embedding models, and optional reranking.
-    -   `hypa.py`: Implements `HypaRetrievalMethod`, a hybrid approach combining dense vector search and sparse BM25 retrieval, followed by fusion and optional reranking.
-    -   `retrieval_strategies.py`: Defines the configurations for all experimental setups. This is where you can define new combinations of chunkers, embedders, and rerankers to test.
+### Benchmarks: `benchmarks/`
 
--   **`utils/`**: Core utilities supporting the benchmark.
-    -   `ai.py`: A crucial module that provides a unified, cached interface for interacting with various AI models (OpenAI, Cohere, Hugging Face) for embedding, reranking, and summarization.
-    -   `chunking.py`: Implements the different chunking strategies, including standard `rcts` (Recursive Character Text Splitter) and the novel `summary_rcts` (SAC).
+This directory contains the scripts and code necessary to reproduce the results from our paper. Each subdirectory represents a distinct benchmark that uses the `sac_rag` library.
 
--   **`generate/`**: Contains scripts to process raw datasets (like CUAD, MAUD) and generate the standardized benchmark JSON files.
--   **`plots/`**: Contains scripts to analyze and visualize the benchmark results.
+*   `legalbenchrag/`: This benchmark is focused on evaluating the **retrieval component** of the RAG system.
+    *   `run_benchmark.py`: The main script to execute the retrieval tests and calculate metrics like precision, recall, and F1-score at the character overlap level.
+    *   `plot/`: Contains scripts to analyze and visualize the results. `analyze_retrieval.py` calculates the Percentage of Foreign Documents (PFD), while `plot_results.py` and `plot_retrieval_analysis.py` generate the performance graphs shown in the paper.
+*   `alrag/`: Our custom-built benchmark for **end-to-end evaluation** of legal RAG systems.
+    *   `run_benchmark.py`: This script runs the full pipeline, from question to final answer generation, and evaluates the quality of the generated text against a ground truth answer as well as retrieval precision, recall, F1-Score and PFD.
+*   `legalbench/`: Scripts to run experiments on tasks from the established LegalBench suite.
+    *   `run_benchmark.py`: The entry point for running the LegalBench tasks.
 
-### `alqa/` — The End-to-End QA Benchmark (ALRAG)
-
-This directory contains the implementation of the **ALRAG** benchmark, which evaluates the entire RAG pipeline from question to final answer.
-
--   `run_benchmark.py`: The **main entry point** for the ALRAG benchmark. It orchestrates the entire process:
-    1.  Loads the ALQA corpus and test set.
-    2.  Initializes a retriever (using methods from `legalbenchrag/methods/`) and a generator LLM.
-    3.  For each question, it retrieves context, constructs a prompt, and generates an answer.
-    4.  Evaluates the generated answer's quality (via semantic similarity) and the retrieval performance.
-    5.  Saves detailed results to a CSV file.
--   **`src/`**: Source code specific to the ALQA benchmark.
-    -   `data.py`: Functions to load the Australian Legal QA corpus and test sets.
-    -   `evaluation.py`: Implements the evaluation logic, including `evaluate_answer_similarity` using embedding models and document-level retrieval metrics.
-    -   `prompts.py`: Defines the prompt templates for the generator LLM, with and without RAG context.
-    -   `result_models.py`: Pydantic models for ALQA test items and result rows.
-
-### `legalbench/` — End-to-End Evaluation on LegalBench Tasks
-
-This directory adapts the original LegalBench framework to run with our custom RAG pipeline, allowing for end-to-end evaluation on a wider range of legal tasks.
-
--   `run_benchmark.py`: The main script to run LegalBench tasks with RAG. It loads tasks, injects retrieved context into the prompts, generates responses, and evaluates them using the task-specific metrics from LegalBench.
--   **`src/`**: Core components for the RAG-enabled LegalBench runner.
-    -   `retrieval.py`: A factory `create_retriever` that uses the strategies defined in `legalbenchrag/methods/`. It defines how retrieved context is formatted and injected into the task prompts.
-    -   `generate.py`: A factory `create_generator` to instantiate LLM clients (OpenAI, Cohere, local Hugging Face models) for generating answers.
-    -   `evaluation.py`: The standard LegalBench evaluation functions (e.g., `evaluate_exact_match_balanced_accuracy`).
-
-
-## TODO:
-
-(TODO: the repo has to be renamed and refactored because legalbenchrag is now only a submodule)
+Each benchmark directory contains a `README.md` file with detailed instructions on how to run the benchmarks, including any required configurations and expected outputs.

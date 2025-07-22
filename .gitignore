@@ -19,9 +19,9 @@ data/cache
 data/raw_data
 benchmark_results
 plots
-legalbench/output
-legalbench/results
-alqa/data
+results/legalbench/output
+benchmarks/legalbench/results
+benchmarks/alrag/data
 
 # TODO: Think about .egg-info at a later time
 LegalBenchRAG.egg-info

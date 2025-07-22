@@ -2,7 +2,7 @@ import dropbox
 import os
 import re
 from pathlib import Path
-from legalbenchrag.utils.credentials import credentials
+from sac_rag.utils.credentials import credentials
 
 # Dropbox shared link
 SHARED_LINK = "https://www.dropbox.com/scl/fo/r7xfa5i3hdsbxex1w6amw/AID389Olvtm-ZLTKAPrw6k4?rlkey=5n8zrbk4c08lbit3iiexofmwg&st=0hu354cq&dl=0"
