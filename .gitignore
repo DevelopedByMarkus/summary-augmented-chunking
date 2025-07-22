@@ -21,7 +21,7 @@ benchmark_results
 plots
 results/legalbench/output
 benchmarks/legalbench/results
-benchmarks/alqa/data
+benchmarks/alrag/data
 
 # TODO: Think about .egg-info at a later time
 LegalBenchRAG.egg-info

@@ -17,7 +17,7 @@ The project includes three distinct benchmarks for evaluation:
 - Secondly, it is best to setup a virtual environment and install the dependencies via the requirements.txt file. Durch development python 3.10 was used.
 - `setup.py`: Basic package setup for `legalbenchrag`.
 - `data/download_dropbox_data.py`: Script to download the necessary legalbench corpus and benchmark files.
-- The corpus must be stored under `data/corpus`, the benchmark files for `legalbenchrag` and `alqa` under `data/benchmarks/`, and the benchmark files for `alqa` under `data/benchmarks/alqa`.
+- The corpus must be stored under `data/corpus`, the benchmark files for `legalbenchrag` and `alrag` under `data/benchmarks/`, and the benchmark files for `alqa` under `data/benchmarks/alqa`.
 - The summaries and embeddings will be cached in a sqlite database to save time and cost in subsequent runs.
 
 ## Codebase Overview
@@ -44,21 +44,21 @@ This is the main package for the retrieval-focused benchmark. It evaluates how w
 -   **`generate/`**: Contains scripts to process raw datasets (like CUAD, MAUD) and generate the standardized benchmark JSON files.
 -   **`plots/`**: Contains scripts to analyze and visualize the benchmark results.
 
-### `alqa/` — The End-to-End QA Benchmark (ALRAG)
+### `alrag/` — The End-to-End QA Benchmark (ALRAG)
 
 This directory contains the implementation of the **ALRAG** benchmark, which evaluates the entire RAG pipeline from question to final answer.
 
 -   `run_benchmark.py`: The **main entry point** for the ALRAG benchmark. It orchestrates the entire process:
-    1.  Loads the ALQA corpus and test set.
+    1.  Loads the ALRAG corpus and test set.
     2.  Initializes a retriever (using methods from `legalbenchrag/methods/`) and a generator LLM.
     3.  For each question, it retrieves context, constructs a prompt, and generates an answer.
     4.  Evaluates the generated answer's quality (via semantic similarity) and the retrieval performance.
     5.  Saves detailed results to a CSV file.
--   **`src/`**: Source code specific to the ALQA benchmark.
+-   **`src/`**: Source code specific to the ALRAG benchmark.
     -   `data.py`: Functions to load the Australian Legal QA corpus and test sets.
     -   `evaluation.py`: Implements the evaluation logic, including `evaluate_answer_similarity` using embedding models and document-level retrieval metrics.
     -   `prompts.py`: Defines the prompt templates for the generator LLM, with and without RAG context.
-    -   `result_models.py`: Pydantic models for ALQA test items and result rows.
+    -   `result_models.py`: Pydantic models for ALRAG test items and result rows.
 
 ### `legalbench/` — End-to-End Evaluation on LegalBench Tasks
 

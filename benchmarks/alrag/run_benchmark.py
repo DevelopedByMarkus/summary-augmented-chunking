@@ -7,7 +7,7 @@ from tqdm import tqdm
 import torch
 import logging
 
-from .src.data import load_alqa_corpus, load_alqa_test_set
+from .src.data import load_alrag_corpus, load_alrag_test_set
 from .src.prompts import RAG_PROMPT_TEMPLATE, NO_RAG_PROMPT_TEMPLATE
 from .src.evaluation import evaluate_single_item
 from .src.result_models import BenchmarkResultRow
@@ -35,7 +35,7 @@ async def main(args):
     logger = logging.getLogger(__name__)
 
     start_time = datetime.now()
-    print(f"Starting ALQA benchmark run at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Starting ALRAG benchmark run at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     if args.verbose:
         print("Verbose mode enabled.")
@@ -44,26 +44,26 @@ async def main(args):
     os.environ["COHERE_API_KEY"] = credentials.ai.cohere_api_key.get_secret_value()
 
     base_data_path = "./data"
-    corpus_path = os.path.join(base_data_path, "corpus/alqa")
+    corpus_path = os.path.join(base_data_path, "corpus/alrag")
     benchmark_path = os.path.join(base_data_path, "benchmarks")
 
     if args.corpus == "debug":
-        corpus_docs = load_alqa_corpus(f"{corpus_path}/open_australian_legal_corpus_first3.jsonl")
+        corpus_docs = load_alrag_corpus(f"{corpus_path}/alrag_corpus_first3.jsonl")
         logger.info("Loaded AL corpus with first 3 documents.")
     elif args.corpus == "full":
-        corpus_docs = load_alqa_corpus(f"{corpus_path}/open_australian_legal_corpus_full.jsonl")
+        corpus_docs = load_alrag_corpus(f"{corpus_path}/alrag_corpus_full.jsonl")
     else:
-        corpus_docs = load_alqa_corpus(f"{corpus_path}/alqa_corpus_gt_only.jsonl")
+        corpus_docs = load_alrag_corpus(f"{corpus_path}/alrag_corpus_gt_only.jsonl")
 
     corpus_map = {doc.file_path: doc.content for doc in corpus_docs}
 
     if args.corpus == "debug":
-        test_items, updated_corpus_map = load_alqa_test_set(f"{benchmark_path}/open_australian_legal_qa_first3.jsonl",
-                                                            corpus_map)
-        logger.info("Loaded ALQA test set with 3 questions for debugging.")
+        test_items, updated_corpus_map = load_alrag_test_set(f"{benchmark_path}/open_australian_legal_qa_first3.jsonl",
+                                                             corpus_map)
+        logger.info("Loaded ALRAG test set with 3 questions for debugging.")
     else:
-        test_items, updated_corpus_map = load_alqa_test_set(f"{benchmark_path}/open_australian_legal_qa_full.jsonl",
-                                                            corpus_map)
+        test_items, updated_corpus_map = load_alrag_test_set(f"{benchmark_path}/open_australian_legal_qa_full.jsonl",
+                                                             corpus_map)
 
     # If the corpus_map was updated, regenerate the list of Document objects for ingestion
     if len(updated_corpus_map) > len(corpus_docs):
@@ -134,7 +134,7 @@ async def main(args):
 
         # NOTE: The legalbench `generate` function expects a list of prompts.
         # We process one-by-one, so we wrap in a list.
-        # The `y_labels` is used by `clean_response`, for ALQA it's free-form so we pass an empty list.
+        # The `y_labels` is used by `clean_response`, for ALRAG it's free-form so we pass an empty list.
         generation_result = await llm_generator.generate([final_prompt], y_labels=[])
         raw_generated_answer = generation_result[0] if generation_result else ""
         generated_answer = raw_generated_answer
@@ -195,7 +195,7 @@ async def main(args):
     else:
         safe_mode_str = "no-rag"
 
-    filename = f"alqa_{args.model_name.replace('/', '_')}_{safe_mode_str}_k{args.top_k}_{ts_str}.csv"
+    filename = f"alrag_{args.model_name.replace('/', '_')}_{safe_mode_str}_k{args.top_k}_{ts_str}.csv"
 
     results_dir = args.results_dir
     os.makedirs(results_dir, exist_ok=True)
@@ -210,7 +210,7 @@ async def main(args):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Run the ALQA benchmark for RAG evaluation.")
+    parser = argparse.ArgumentParser(description="Run the ALRAG benchmark for RAG evaluation.")
 
     parser.add_argument("--model-name", "-m", type=str, required=True, help="Name of the generator LLM.")
     parser.add_argument(
@@ -225,7 +225,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--max-questions", type=int, default=None,
                         help="Maximum number of questions to process. If None, all questions are used.")
-    parser.add_argument("--results-dir", type=str, default="./results/alqa",
+    parser.add_argument("--results-dir", type=str, default="./results/alrag",
                         help="Directory to save the output CSV file.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging for debugging.")
 

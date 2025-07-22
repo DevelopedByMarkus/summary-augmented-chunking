@@ -2,19 +2,19 @@ from pydantic import BaseModel
 from typing import List, Optional, Tuple
 
 
-class ALQAGroundTruthInfo(BaseModel):
-    """Holds the ground truth context information for an ALQA item."""
+class ALRAGGroundTruthInfo(BaseModel):
+    """Holds the ground truth context information for an ALRAG item."""
     doc_id: str
     span: Tuple[int, int]
     text: str
 
 
-class ALQATestItem(BaseModel):
-    """Represents a single, processed question-answer item from the ALQA dataset."""
+class ALRAGTestItem(BaseModel):
+    """Represents a single, processed question-answer item from the ALRAG dataset."""
     index: int
     question: str
     answer: str
-    ground_truth_info: ALQAGroundTruthInfo
+    ground_truth_info: ALRAGGroundTruthInfo
 
 
 class BenchmarkResultRow(BaseModel):

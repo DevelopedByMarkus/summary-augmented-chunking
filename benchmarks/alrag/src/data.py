@@ -4,13 +4,13 @@ from typing import List, Dict, Tuple
 from tqdm import tqdm
 
 from sac_rag.data_models import Document
-from .result_models import ALQATestItem, ALQAGroundTruthInfo
+from .result_models import ALRAGTestItem, ALRAGGroundTruthInfo
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def load_alqa_corpus(corpus_path: str) -> List[Document]:
+def load_alrag_corpus(corpus_path: str) -> List[Document]:
     """
     Loads the Open Australian Legal Corpus from a .jsonl file.
 
@@ -20,21 +20,21 @@ def load_alqa_corpus(corpus_path: str) -> List[Document]:
     Returns:
         A list of Document objects.
     """
-    logger.info(f"Loading ALQA corpus from: {corpus_path}")
+    logger.info(f"Loading ALRAG corpus from: {corpus_path}")
     corpus_docs = []
     with open(corpus_path, 'r', encoding='utf-8') as f:
         for line in tqdm(f, desc="Loading Corpus"):
             data = json.loads(line)
             # Use 'version_id' as the unique identifier for the document.
-            doc = Document(file_path=f"alqa/{data['version_id']}", content=data['text'])
+            doc = Document(file_path=f"alrag/{data['version_id']}", content=data['text'])
             corpus_docs.append(doc)
     logger.info(f"Successfully loaded {len(corpus_docs)} documents from the corpus.")
     return corpus_docs
 
 
-def load_alqa_test_set(qa_path: str, corpus_map: Dict[str, str]) -> Tuple[List[ALQATestItem], Dict[str, str]]:
+def load_alrag_test_set(qa_path: str, corpus_map: Dict[str, str]) -> Tuple[List[ALRAGTestItem], Dict[str, str]]:
     """
-    Loads the ALQA test set, finds ground-truth snippet spans, and prepares test items.
+    Loads the ALRAG test set, finds ground-truth snippet spans, and prepares test items.
     This version is more robust, handling cases where documents or snippets are not found.
 
     Args:
@@ -43,11 +43,11 @@ def load_alqa_test_set(qa_path: str, corpus_map: Dict[str, str]) -> Tuple[List[A
 
     Returns:
         A tuple containing:
-        - A list of ALQATestItem objects ready for benchmarking.
+        - A list of ALRAGTestItem objects ready for benchmarking.
         - The potentially updated corpus_map.
     """
-    logger.info(f"Loading and processing ALQA test set from: {qa_path}")
-    test_items: List[ALQATestItem] = []
+    logger.info(f"Loading and processing ALRAG test set from: {qa_path}")
+    test_items: List[ALRAGTestItem] = []
     skipped_multi_occurrence = 0
     dummy_span_count = 0
     added_to_corpus_count = 0
@@ -57,7 +57,7 @@ def load_alqa_test_set(qa_path: str, corpus_map: Dict[str, str]) -> Tuple[List[A
 
     for i, qa_pair in enumerate(tqdm(qa_data, desc="Processing QA Pairs")):
         source_info = qa_pair.get('source', {})
-        doc_id = f"alqa/{source_info.get('version_id')}"
+        doc_id = f"alrag/{source_info.get('version_id')}"
         gt_snippet_text = source_info.get('text')
 
         if not doc_id or not gt_snippet_text:
@@ -78,12 +78,12 @@ def load_alqa_test_set(qa_path: str, corpus_map: Dict[str, str]) -> Tuple[List[A
         if start_index == -1:
             logger.warning(f"Ground-truth snippet for item {i} not found in document '{doc_id}'. Using dummy span (-1, -1).")
             dummy_span_count += 1
-            ground_truth_info = ALQAGroundTruthInfo(
+            ground_truth_info = ALRAGGroundTruthInfo(
                 doc_id=doc_id,
                 span=(-1, -1),  # Use dummy values
                 text=gt_snippet_text
             )
-            test_item = ALQATestItem(
+            test_item = ALRAGTestItem(
                 index=i,
                 question=qa_pair['question'],
                 answer=qa_pair['answer'],
@@ -101,12 +101,12 @@ def load_alqa_test_set(qa_path: str, corpus_map: Dict[str, str]) -> Tuple[List[A
 
         # Happy path: snippet found exactly once
         end_index = start_index + len(gt_snippet_text)
-        ground_truth_info = ALQAGroundTruthInfo(
+        ground_truth_info = ALRAGGroundTruthInfo(
             doc_id=doc_id,
             span=(start_index, end_index),
             text=gt_snippet_text
         )
-        test_item = ALQATestItem(
+        test_item = ALRAGTestItem(
             index=i,
             question=qa_pair['question'],
             answer=qa_pair['answer'],
