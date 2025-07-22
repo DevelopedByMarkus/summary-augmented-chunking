@@ -1,192 +1,312 @@
+import argparse
 import asyncio
-from collections.abc import Coroutine
-from typing import Any
-from tqdm import tqdm
+import logging
 import math
-
+import os
+import random
+from typing import List, Tuple
+import pandas as pd
 from pydantic import BaseModel, computed_field, model_validator
+from tqdm import tqdm
 from typing_extensions import Self
+from datetime import datetime
 
-from src.sac_rag.data_models import (
-    Document,
-    QAGroundTruth,
-    RetrievalMethod,
-    RetrievedSnippet,
-)
+from sac_rag.data_models import Benchmark, Document, QAGroundTruth, RetrievalMethod, RetrievedSnippet
+from sac_rag.utils.credentials import credentials
+from sac_rag.utils.config_loader import load_strategy_from_file
+from sac_rag.utils.retriever_factory import create_retriever
+from sac_rag.utils.utils import sanitize_filename
 
 
+# --- Pydantic Models for this Benchmark's Evaluation Logic ---
 class QAResult(BaseModel):
     qa_gt: QAGroundTruth
     retrieved_snippets: list[RetrievedSnippet]
 
-    @computed_field  # type: ignore[misc]
+    @computed_field
     @property
     def precision(self) -> float:
-        total_retrieved_len = 0
+        total_retrieved_len = sum(s.span[1] - s.span[0] for s in self.retrieved_snippets)
+        if total_retrieved_len == 0:
+            return 0.0
+
         relevant_retrieved_len = 0
         for snippet in self.retrieved_snippets:
-            total_retrieved_len += snippet.span[1] - snippet.span[0]
-            # It's guaranteed that gt_snippets don't overlap
             for gt_snippet in self.qa_gt.snippets:
                 if snippet.file_path == gt_snippet.file_path:
-                    common_min = max(snippet.span[0], gt_snippet.span[0])
-                    common_max = min(snippet.span[1], gt_snippet.span[1])
-                    if common_max > common_min:
-                        relevant_retrieved_len += common_max - common_min
-        if total_retrieved_len == 0:
-            return 0
+                    overlap_start = max(snippet.span[0], gt_snippet.span[0])
+                    overlap_end = min(snippet.span[1], gt_snippet.span[1])
+                    if overlap_end > overlap_start:
+                        relevant_retrieved_len += overlap_end - overlap_start
         return relevant_retrieved_len / total_retrieved_len
 
-    @computed_field  # type: ignore[misc]
+    @computed_field
     @property
     def recall(self) -> float:
-        total_relevant_len = 0
-        relevant_retrieved_len = 0
-        for gt_snippet in self.qa_gt.snippets:
-            total_relevant_len += gt_snippet.span[1] - gt_snippet.span[0]
-            # It's guaranteed that gt_snippets don't overlap
-            for snippet in self.retrieved_snippets:
-                if snippet.file_path == gt_snippet.file_path:
-                    common_min = max(snippet.span[0], gt_snippet.span[0])
-                    common_max = min(snippet.span[1], gt_snippet.span[1])
-                    if common_max > common_min:
-                        relevant_retrieved_len += common_max - common_min
+        total_relevant_len = sum(gt.span[1] - gt.span[0] for gt in self.qa_gt.snippets)
         if total_relevant_len == 0:
-            return 0
+            return 0.0
+
+        relevant_retrieved_len = 0
+        for snippet in self.retrieved_snippets:
+            for gt_snippet in self.qa_gt.snippets:
+                if snippet.file_path == gt_snippet.file_path:
+                    overlap_start = max(snippet.span[0], gt_snippet.span[0])
+                    overlap_end = min(snippet.span[1], gt_snippet.span[1])
+                    if overlap_end > overlap_start:
+                        relevant_retrieved_len += overlap_end - overlap_start
         return relevant_retrieved_len / total_relevant_len
 
 
 def avg(arr: list[float]) -> float:
-    if len(arr) == 0:
-        return float("nan")
-    return sum(arr) / len(arr)
+    return sum(arr) / len(arr) if arr else float("nan")
 
 
 class BenchmarkResult(BaseModel):
     qa_result_list: list[QAResult]
     weights: list[float]
 
-    def get_avg_recall_and_precision(
-        self, tag_filter: str | None = None
-    ) -> tuple[float, float]:
+    def get_avg_recall_and_precision(self, tag_filter: str | None = None) -> tuple[float, float]:
         indices = [
-            i
-            for i, qa_result in enumerate(self.qa_result_list)
-            if (tag_filter is None or tag_filter in qa_result.qa_gt.tags)
+            i for i, qa_result in enumerate(self.qa_result_list)
+            if tag_filter is None or tag_filter in qa_result.qa_gt.tags
         ]
-        filtered_qa_results = [self.qa_result_list[i] for i in indices]
-        filtered_weights = [self.weights[i] for i in indices]
-
-        if not filtered_weights: # If no tests match filter
+        if not indices:
             return float("nan"), float("nan")
 
-        avg_weight = avg(filtered_weights)
+        filtered_results = [self.qa_result_list[i] for i in indices]
+        filtered_weights = [self.weights[i] for i in indices]
 
-        # Avoid division by zero AND handle NaN from avg() if filtered_weights was empty
-        if avg_weight == 0 or math.isnan(avg_weight):
-            recall_avg = avg([qa_result.recall for qa_result in filtered_qa_results])
-            precision_avg = avg([qa_result.precision for qa_result in filtered_qa_results])
-            # avg() already returns nan for empty lists, so this is safe
-            return recall_avg, precision_avg
+        total_weight = sum(filtered_weights)
+        if total_weight == 0:  # Unweighted average
+            avg_recall = avg([r.recall for r in filtered_results])
+            avg_precision = avg([r.precision for r in filtered_results])
+            return avg_recall, avg_precision
 
-        # Calculate weighted averages
-        recall_weighted_avg = avg(
-                [
-                    qa_result.recall * weight / avg_weight
-                    for qa_result, weight in zip(filtered_qa_results, filtered_weights)
-                ]
-            )
-        precision_weighted_avg = avg(
-                [
-                    qa_result.precision * weight / avg_weight
-                    for qa_result, weight in zip(filtered_qa_results, filtered_weights)
-                ]
-            )
+        # Weighted average
+        recall_weighted_avg = sum(r.recall * w for r, w in zip(filtered_results, filtered_weights)) / total_weight
+        precision_weighted_avg = sum(r.precision * w for r, w in zip(filtered_results, filtered_weights)) / total_weight
         return recall_weighted_avg, precision_weighted_avg
 
-    @computed_field  # type: ignore[misc]
+    @computed_field
     @property
     def avg_precision(self) -> float:
         return self.get_avg_recall_and_precision()[1]
 
-    @computed_field  # type: ignore[misc]
+    @computed_field
     @property
     def avg_recall(self) -> float:
         return self.get_avg_recall_and_precision()[0]
 
-    @computed_field  # type: ignore[misc]
+    @computed_field
     @property
     def avg_f1_score(self) -> float:
-        """Calculates the overall average F1-score based on avg_precision and avg_recall."""
-        precision = self.avg_precision
-        recall = self.avg_recall
-
-        # Handle cases where precision or recall might be NaN (if no tests were run)
-        # Check explicitly for float type AND NaN values
-        if isinstance(precision, float) and isinstance(recall, float) and not (
-                math.isnan(precision) or math.isnan(recall)):
-            # Handle the edge case where precision + recall is 0
-            if precision + recall == 0:
-                return 0.0
-            else:
-                return 2 * (precision * recall) / (precision + recall)
-        else:
-            # If either P or R is NaN, F1 is also undefined
-            return float('nan')
+        precision, recall = self.avg_precision, self.avg_recall
+        if not (math.isnan(precision) or math.isnan(recall)) and (precision + recall > 0):
+            return 2 * (precision * recall) / (precision + recall)
+        return float('nan')
 
     @model_validator(mode="after")
     def validate_lengths(self) -> Self:
         if len(self.qa_result_list) != len(self.weights):
-            raise ValueError("length of qa_result_list and weights do not match!")
+            raise ValueError("Length of qa_result_list and weights do not match!")
         return self
 
 
-async def run_benchmark(
-    qa_gt_list: list[QAGroundTruth],
-    corpus: list[Document],
-    retrieval_method: RetrievalMethod,
-    *,
-    weights: list[float] | None = None,
-) -> BenchmarkResult:
-    # Process the documents
-    for document in corpus:
-        await retrieval_method.ingest_document(document)
-    await retrieval_method.sync_all_documents()
+# --- Core Benchmark Execution Logic ---
 
-    # Run the benchmark
-    # Create a tqdm progress bar instance
-    pbar = tqdm(total=len(qa_gt_list), desc="Running Queries", ncols=100)
+async def execute_single_run(
+        qa_gt_list: list[QAGroundTruth],
+        corpus: list[Document],
+        retriever: RetrievalMethod,
+        weights: list[float] | None = None,
+) -> BenchmarkResult:
+    """Executes a benchmark run for a given retriever and test set."""
+    for document in tqdm(corpus, desc="Ingesting documents"):
+        await retriever.ingest_document(document)
+    await retriever.sync_all_documents()
 
     async def run_query(qa_gt: QAGroundTruth) -> QAResult:
-        query_response = await retrieval_method.query(qa_gt.query)
-        return QAResult(
-            qa_gt=qa_gt, retrieved_snippets=query_response.retrieved_snippets
-        )
+        query_response = await retriever.query(qa_gt.query)
+        return QAResult(qa_gt=qa_gt, retrieved_snippets=query_response.retrieved_snippets)
 
-    # Define a wrapper coroutine to run the query and update the progress bar
-    async def run_query_with_progress(qa_gt: QAGroundTruth) -> QAResult:
-        try:
-            result = await run_query(qa_gt)
-            return result
-        finally:
-            # Ensure the progress bar updates even if an error occurs in run_query
-            pbar.update(1)
+    tasks = [run_query(qa_gt) for qa_gt in qa_gt_list]
+    results = await asyncio.gather(
+        *[t for t in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Running queries")])
 
-    # Create the list of tasks using the wrapper
-    tasks: list[Coroutine[Any, Any, QAResult]] = [
-        run_query_with_progress(qa_gt) for qa_gt in qa_gt_list
-    ]
-
-    # Run the benchmark queries concurrently using asyncio.gather (preserves order)
-    try:
-        results = await asyncio.gather(*tasks)
-    finally:
-        # Ensure the progress bar is closed even if gather is cancelled or fails
-        pbar.close()
-
-    await retrieval_method.cleanup()
+    await retriever.cleanup()
 
     return BenchmarkResult(
         qa_result_list=results,
         weights=weights if weights is not None else [1.0] * len(results),
     )
+
+
+# --- Data Setup Logic ---
+
+def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Document], List[QAGroundTruth], List[float]]:
+    """Loads, samples, and prepares all data needed for the benchmark."""
+    benchmark_name_to_weight: dict[str, float] = {
+        "privacy_qa": 0.25, "contractnli": 0.25, "maud": 0.25, "cuad": 0.25,
+    }
+
+    all_tests, weights, used_doc_paths = [], [], set()
+
+    for name, weight in benchmark_name_to_weight.items():
+        benchmark_file = f"./data/benchmarks/{name}.json"
+        if not os.path.exists(benchmark_file):
+            print(f"Warning: Benchmark file not found: {benchmark_file}. Skipping.")
+            continue
+
+        with open(benchmark_file, encoding='utf-8') as f:
+            tests = Benchmark.model_validate_json(f.read()).tests
+
+        # Sampling logic
+        sampled_tests = tests
+        if 0 < max_tests < len(tests):
+            print(f"Sampling {max_tests} tests from {name} ({len(tests)} total)")
+            if sort_by_doc:
+                tests = sorted(tests, key=lambda t: t.snippets[0].file_path if t.snippets else "")
+            else:
+                random.seed(name + str(max_tests))
+                random.shuffle(tests)
+            sampled_tests = tests[:max_tests]
+
+        used_doc_paths.update(s.file_path for t in sampled_tests for s in t.snippets)
+        for t in sampled_tests:
+            t.tags = [name]
+
+        all_tests.extend(sampled_tests)
+        if sampled_tests:
+            per_test_weight = weight / len(sampled_tests)
+            weights.extend([per_test_weight] * len(sampled_tests))
+
+    print(f"Total tests selected across all benchmarks: {len(all_tests)}")
+
+    # Corpus loading
+    corpus, loaded_paths = [], set()
+    print(f"Attempting to load {len(used_doc_paths)} required corpus documents...")
+    for doc_path in sorted(list(used_doc_paths)):
+        full_path = f"./data/corpus/{doc_path}"
+        if not os.path.exists(full_path):
+            print(f"Warning: Corpus file not found at '{full_path}'. Skipping.")
+            continue
+
+        with open(full_path, encoding='utf-8') as f:
+            content = f.read()
+            if content.strip():
+                corpus.append(Document(file_path=doc_path, content=content))
+                loaded_paths.add(doc_path)
+
+    print(f"Successfully loaded {len(loaded_paths)} corpus documents.")
+
+    # Filter tests to only those with loaded documents
+    final_tests, final_weights = [], []
+    for i, test in enumerate(all_tests):
+        if all(s.file_path in loaded_paths for s in test.snippets):
+            final_tests.append(test)
+            final_weights.append(weights[i])
+
+    if len(final_tests) != len(all_tests):
+        print(f"Filtered out {len(all_tests) - len(final_tests)} tests due to missing corpus files.")
+
+    if not final_tests:
+        raise RuntimeError("No valid tests remaining after document filtering. Exiting.")
+
+    return corpus, final_tests, final_weights
+
+
+# --- Main Orchestrator ---
+
+async def main(args):
+    logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logging.getLogger("bm25s").setLevel(logging.WARNING)
+
+    start_time = datetime.now()
+    print(f"Starting ALRAG benchmark run at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    os.environ["OPENAI_API_KEY"] = credentials.ai.openai_api_key.get_secret_value()
+    os.environ["COHERE_API_KEY"] = credentials.ai.cohere_api_key.get_secret_value()
+    os.environ["VOYAGEAI_API_KEY"] = credentials.ai.voyageai_api_key.get_secret_value()
+
+    # 1. Setup and load all data once
+    corpus, tests, weights = setup_and_load_data(args.max_tests_per_benchmark, args.sort_by_document)
+
+    # 2. Prepare for results
+    run_name = start_time.strftime("%Y-%m-%d_%H-%M-%S")
+    results_dir = os.path.join(args.results_dir, run_name)
+    os.makedirs(results_dir, exist_ok=True)
+    print(f"Benchmark results will be saved to: {results_dir}")
+
+    summary_rows = []
+
+    # 3. Loop through each provided configuration file
+    for i, config_path in enumerate(args.retrieval_configs):
+        print(f"\n--- Running Config {i + 1}/{len(args.retrieval_configs)}: {config_path} ---")
+
+        try:
+            strategy = load_strategy_from_file(config_path)
+            retriever = create_retriever(strategy)
+
+            # Execute the benchmark
+            result = await execute_single_run(tests, corpus, retriever, weights=weights)
+
+            # Save detailed JSON result for this run
+            config_basename, _ = os.path.splitext(os.path.basename(config_path))
+            result_filename = os.path.join(results_dir, f"{i}_{config_basename}.json")
+            with open(result_filename, "w", encoding='utf-8') as f:
+                f.write(result.model_dump_json(indent=2))
+
+            # Prepare summary row
+            row = {"config_file": config_path, "recall": result.avg_recall, "precision": result.avg_precision,
+                   "f1_score": result.avg_f1_score}
+            summary_rows.append(row)
+
+            print(f"  Overall Avg Recall:    {100 * result.avg_recall:.2f}%")
+            print(f"  Overall Avg Precision: {100 * result.avg_precision:.2f}%")
+            print(f"  Overall Avg F1-Score:  {100 * result.avg_f1_score:.2f}%")
+
+        except Exception as e:
+            import traceback
+            print(f"!!!!!!!!!!!! ERROR running benchmark for config {config_path} !!!!!!!!!!!!")
+            print(f"Error: {e}")
+            traceback.print_exc()
+            summary_rows.append(
+                {"config_file": config_path, "recall": "ERROR", "precision": "ERROR", "f1_score": "ERROR"})
+
+    # 4. Save final summary CSV
+    if summary_rows:
+        df = pd.DataFrame(summary_rows)
+        summary_path = os.path.join(results_dir, "results_summary.csv")
+        df.to_csv(summary_path, index=False)
+        print(f'\nOverall Benchmark summary saved to: "{summary_path}"')
+
+    print(f"\nBenchmark run '{run_name}' finished.")
+
+    end_time = datetime.now()
+    print(f"Run finished at: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Total duration: {end_time - start_time}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the legalbench-rag benchmark.")
+    parser.add_argument(
+        "--retrieval-configs", "-rc",
+        nargs='+', required=True,
+        help="One or more paths to retrieval strategy JSON config files."
+    )
+    parser.add_argument(
+        "--max-tests-per-benchmark", type=int, default=194,
+        help="Maximum number of tests to sample from each sub-benchmark (e.g., cuad, maud)."
+    )
+    parser.add_argument(
+        "--sort-by-document", action="store_true",
+        help="Enable sorting by document to potentially speed up ingestion during testing."
+    )
+    parser.add_argument(
+        "--results-dir", type=str, default="./results/legalbench_rag",
+        help="Base directory to save the output run folder."
+    )
+
+    args = parser.parse_args()
+    asyncio.run(main(args))

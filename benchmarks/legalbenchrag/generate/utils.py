@@ -6,7 +6,7 @@ import requests
 from pydantic import BaseModel
 from tqdm import tqdm
 
-from src.sac_rag.utils.ai import AIMessage, AIModel, ai_call
+from sac_rag.utils.ai import AIMessage, AIModel, ai_call
 
 # Used to manually verify title quality
 WRITE_TITLES = False
