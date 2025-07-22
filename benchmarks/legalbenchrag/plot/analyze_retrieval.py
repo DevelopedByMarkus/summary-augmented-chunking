@@ -3,6 +3,7 @@ import os
 import argparse
 from collections import defaultdict
 import sys
+from pathlib import Path
 
 
 def analyze_filepaths_for_plotting(json_file_path):
@@ -262,8 +263,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Construct the full path relative to the script's assumed location (project root)
-    base_dir = "benchmark_results"
+    project_root = Path.cwd()
+    base_dir = project_root / "legalbenchrag"
     full_json_path = os.path.join(base_dir, args.results_path)
 
     print(f"Starting analysis for: {full_json_path}")
@@ -273,12 +274,12 @@ def main():
 
     if dataset_stats is None or overall_stats is None:
         print("Analysis aborted due to errors.", file=sys.stderr)
-        sys.exit(1) # Exit with error code
+        sys.exit(1)  # Exit with error code
 
     if not overall_stats['correct'] and not overall_stats['incorrect']:
-         print("Warning: No retrieved snippets were processed. Check the input file format and content.", file=sys.stderr)
-         # Decide if exiting or proceeding with empty results is better. Let's proceed.
-         # sys.exit(1)
+        print("Warning: No retrieved snippets were processed. Check the input file format and content.", file=sys.stderr)
+        # Decide if exiting or proceeding with empty results is better. Let's proceed.
+        # sys.exit(1)
 
     # Format results for display and saving
     results_output = format_results(dataset_stats, overall_stats, full_json_path)
@@ -286,7 +287,7 @@ def main():
     # Print results to console
     print("\n" + results_output)
 
-    # Determine output file path
+    # Determine paths
     output_dir = os.path.dirname(full_json_path)
     base_filename = os.path.basename(full_json_path)
     filename_without_ext, _ = os.path.splitext(base_filename)
@@ -295,6 +296,7 @@ def main():
 
     # Save results to text file
     save_results_to_file(results_output, output_filepath)
+
 
 if __name__ == "__main__":
     main()

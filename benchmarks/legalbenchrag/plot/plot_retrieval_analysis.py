@@ -3,11 +3,12 @@ import sys
 import argparse
 from collections import defaultdict
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 # --- Import the analysis function ---
 # Assuming analyze_retrieval.py is in the same directory
 try:
-    from analyze_retrieval import analyze_filepaths_for_plotting
+    from .analyze_retrieval import analyze_filepaths_for_plotting
 except ImportError:
     print("Error: Could not import 'analyze_filepaths_for_plotting' from 'analyze_retrieval.py'.")
     print("Ensure 'analyze_retrieval.py' is in the same directory as this script.")
@@ -161,11 +162,10 @@ def main():
     args = parser.parse_args()
 
     # --- Determine Paths ---
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(script_dir, '..', '..'))  # Assumes script is in legalbenchrag/legalbenchrag/plots
-    results_base_dir = os.path.join(project_root, "benchmark_results")
-    target_run_dir = os.path.join(results_base_dir, args.run_subdir)
-    plot_output_dir = os.path.join(project_root, "plots", "retrieval_analysis")
+    project_root = Path.cwd()
+    results_base_dir = project_root / "results" / "legalbench_rag"
+    target_run_dir = results_base_dir / args.run_subdir
+    plot_output_dir = project_root / "plots" / "legalbenchrag" / "retrieval_analysis"
 
     if not os.path.isdir(target_run_dir):
         print(f"Error: Target directory not found: {target_run_dir}")

@@ -340,7 +340,6 @@ def prepare_data_for_task(df: pd.DataFrame, selected_groups: dict[str, list[int]
 
 # --- Main Plotting Logic ---
 
-### --- MODIFIED --- ###
 def plot_grouped_results(plot_df: pd.DataFrame, selected_groups: dict[str, list[int]], output_dir: Path,
                          plot_title_base: str, task_name: str):
     """
@@ -398,7 +397,6 @@ def plot_grouped_results(plot_df: pd.DataFrame, selected_groups: dict[str, list[
         plt.close(fig)
 
 
-### --- NEW --- ###
 def plot_combined_results(master_df: pd.DataFrame, selected_groups: dict[str, list[int]],
                           strategy_map: dict[int, dict], selected_tasks: list[str],
                           output_dir: Path, plot_title_base: str):
@@ -504,7 +502,7 @@ if __name__ == "__main__":
 
     # --- Setup Paths ---
     project_root = Path.cwd()
-    output_dir = project_root / "plots" / "performance" / args.output_name
+    output_dir = project_root / "plots" / "legalbenchrag" / "performance" / args.output_name
 
     # --- Main Execution Flow ---
     # 1. Load Data
