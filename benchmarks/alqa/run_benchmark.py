@@ -3,7 +3,7 @@ import asyncio
 import os
 import pandas as pd
 from datetime import datetime
-from tqdm.asyncio import tqdm
+from tqdm import tqdm
 import torch
 import logging
 
@@ -27,41 +27,43 @@ async def main(args):
         level=log_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
-    # Suppress overly verbose third-party loggers
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("datasets").setLevel(logging.WARNING)
     logging.getLogger("pysqlite_vec").setLevel(logging.WARNING)
     logging.getLogger("bm25s").setLevel(logging.WARNING)
 
-    # --- Setup Logger ---
     logger = logging.getLogger(__name__)
 
     start_time = datetime.now()
     print(f"Starting ALQA benchmark run at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # --- Setup: Load data and models ---
     if args.verbose:
         print("Verbose mode enabled.")
 
-    # Set API keys from credentials to environment
     os.environ["OPENAI_API_KEY"] = credentials.ai.openai_api_key.get_secret_value()
     os.environ["COHERE_API_KEY"] = credentials.ai.cohere_api_key.get_secret_value()
 
+    base_data_path = "./data"
+    corpus_path = os.path.join(base_data_path, "corpus/alqa")
+    benchmark_path = os.path.join(base_data_path, "benchmarks")
+
     if args.corpus == "debug":
-        corpus_docs = load_alqa_corpus("./data/corpus/alqa/open_australian_legal_corpus_first3.jsonl")
+        corpus_docs = load_alqa_corpus(f"{corpus_path}/open_australian_legal_corpus_first3.jsonl")
         logger.info("Loaded AL corpus with first 3 documents.")
     elif args.corpus == "full":
-        corpus_docs = load_alqa_corpus("./data/corpus/alqa/open_australian_legal_corpus_full.jsonl")
+        corpus_docs = load_alqa_corpus(f"{corpus_path}/open_australian_legal_corpus_full.jsonl")
     else:
-        corpus_docs = load_alqa_corpus("./data/corpus/alqa/alqa_corpus_gt_only.jsonl")
+        corpus_docs = load_alqa_corpus(f"{corpus_path}/alqa_corpus_gt_only.jsonl")
 
     corpus_map = {doc.file_path: doc.content for doc in corpus_docs}
 
     if args.corpus == "debug":
-        test_items, updated_corpus_map = load_alqa_test_set("./data/benchmarks/open_australian_legal_qa_first3.jsonl", corpus_map)
+        test_items, updated_corpus_map = load_alqa_test_set(f"{benchmark_path}/open_australian_legal_qa_first3.jsonl",
+                                                            corpus_map)
         logger.info("Loaded ALQA test set with 3 questions for debugging.")
     else:
-        test_items, updated_corpus_map = load_alqa_test_set("./data/benchmarks/open_australian_legal_qa_full.jsonl", corpus_map)
+        test_items, updated_corpus_map = load_alqa_test_set(f"{benchmark_path}/open_australian_legal_qa_full.jsonl",
+                                                            corpus_map)
 
     # If the corpus_map was updated, regenerate the list of Document objects for ingestion
     if len(updated_corpus_map) > len(corpus_docs):
@@ -75,7 +77,7 @@ async def main(args):
         test_items = test_items[:args.max_questions]
         print(f"Running benchmark on a subset of {len(test_items)} questions.")
 
-    # --- Initialize Retriever (if in RAG mode) ---
+    # --- Initialize Retriever (if config is provided) ---
     retriever = None
     retrieval_strategy = None
 
@@ -108,8 +110,7 @@ async def main(args):
     # --- Main Benchmark Loop ---
     results_list = []
 
-    progress_bar = tqdm(test_items, desc="Running Benchmark")
-    for item in progress_bar:
+    for item in tqdm(test_items, desc="Running Benchmark"):
         retrieved_snippets = []
         retrieved_context_for_prompt = "No context retrieved."
 
@@ -136,9 +137,8 @@ async def main(args):
         # The `y_labels` is used by `clean_response`, for ALQA it's free-form so we pass an empty list.
         generation_result = await llm_generator.generate([final_prompt], y_labels=[])
         raw_generated_answer = generation_result[0] if generation_result else ""
-        generated_answer = raw_generated_answer  # For ALQA, no special cleaning needed like in multi-choice tasks.
+        generated_answer = raw_generated_answer
 
-        # Evaluation
         eval_metrics = await evaluate_single_item(
             generated_answer=generated_answer,
             ground_truth_answer=item.answer,
@@ -147,7 +147,6 @@ async def main(args):
             eval_embedding_model=eval_embedding_model
         )
 
-        # Store results
         result_row = BenchmarkResultRow(
             index=item.index,
             ground_truth_doc_id=item.ground_truth_info.doc_id,
@@ -163,14 +162,13 @@ async def main(args):
             retrieval_f1_score=eval_metrics.get('retrieval_f1_score'),
             ground_truth_snippet_span=str(item.ground_truth_info.span),
             generator_model=args.model_name,
-            retrieval_strategy=args.retrieval_config,
+            retrieval_strategy=args.retrieval_config if args.retrieval_config else "No-RAG",
             embedding_model_for_retrieval=retrieval_strategy.embedding_model.model if retrieval_strategy else None,
             top_k_retrieval=args.top_k,
             eval_embedding_model=args.eval_embedding_model
         )
         results_list.append(result_row)
 
-    # --- Finalize and Save Results ---
     if retriever:
         await retriever.cleanup()
     if hasattr(llm_generator, 'close_http_client'):
@@ -178,7 +176,6 @@ async def main(args):
 
     results_df = pd.DataFrame([row.model_dump() for row in results_list])
 
-    # Print overall summary
     print("\n--- Benchmark Complete ---")
     if 'answer_similarity_score' in results_df.columns:
         avg_sim = results_df['answer_similarity_score'].mean()
@@ -191,13 +188,13 @@ async def main(args):
         print(f"Average Retrieval Recall (Doc-Level):    {avg_rec:.4f}")
         print(f"Average Retrieval F1-Score (Doc-Level):  {avg_f1:.4f}")
 
-    # Save to CSV
     ts_str = start_time.strftime('%Y%m%d_%H%M%S')
     if args.retrieval_config:
         config_basename = os.path.basename(args.retrieval_config)
         safe_mode_str, _ = os.path.splitext(config_basename)
     else:
         safe_mode_str = "no-rag"
+
     filename = f"alqa_{args.model_name.replace('/', '_')}_{safe_mode_str}_k{args.top_k}_{ts_str}.csv"
 
     results_dir = args.results_dir
@@ -215,7 +212,6 @@ async def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run the ALQA benchmark for RAG evaluation.")
 
-    # Model and Retrieval Config
     parser.add_argument("--model-name", "-m", type=str, required=True, help="Name of the generator LLM.")
     parser.add_argument(
         "--retrieval-config", "-rc", type=str,
@@ -227,14 +223,12 @@ if __name__ == '__main__':
     parser.add_argument("--eval-embedding-model", type=str, default="text-embedding-3-large",
                         help="Name of the embedding model for answer similarity evaluation.")
 
-    # Execution Config
     parser.add_argument("--max-questions", type=int, default=None,
                         help="Maximum number of questions to process. If None, all questions are used.")
     parser.add_argument("--results-dir", type=str, default="./results/alqa",
                         help="Directory to save the output CSV file.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging for debugging.")
 
-    # LLM Generator Config
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device for local models.")
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature for LLM generation.")
