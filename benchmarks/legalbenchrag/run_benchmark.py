@@ -4,7 +4,7 @@ import logging
 import math
 import os
 import random
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 import pandas as pd
 from pydantic import BaseModel, computed_field, model_validator
 from functools import cached_property
@@ -16,6 +16,8 @@ from sac_rag.data_models import Benchmark, Document, QAGroundTruth, RetrievalMet
 from sac_rag.utils.credentials import credentials
 from sac_rag.utils.config_loader import load_strategy_from_file
 from sac_rag.utils.retriever_factory import create_retriever
+from sac_rag.methods.baseline import RetrievalStrategy as BaselineStrategy
+from sac_rag.methods.hybrid import HybridStrategy
 
 
 # --- Pydantic Models for this Benchmark's Evaluation Logic ---
@@ -156,10 +158,6 @@ async def execute_single_run(
 
 def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Document], List[QAGroundTruth], List[float]]:
     """Loads, samples, and prepares all data needed for the benchmark."""
-    benchmark_name_to_weight: dict[str, float] = {
-        "privacy_qa": 0.25, "contractnli": 0.25, "maud": 0.25, "cuad": 0.25,
-    }
-
     all_tests, weights, used_doc_paths = [], [], set()
 
     for name, weight in benchmark_name_to_weight.items():
@@ -226,6 +224,65 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
     return corpus, final_tests, final_weights
 
 
+benchmark_name_to_weight: dict[str, float] = {
+    "privacy_qa": 0.25, "contractnli": 0.25, "maud": 0.25, "cuad": 0.25,
+}
+
+
+def create_summary_row(idx: int, config_path: str, strategy: Any, result: BenchmarkResult) -> Dict[str, Any]:
+    """Creates a detailed dictionary row for the summary CSV."""
+
+    # Start with basic info
+    row = {
+        "i": idx,
+        "config_file": config_path,
+        "recall": result.avg_recall,
+        "precision": result.avg_precision,
+        "f1_score": result.avg_f1_score
+    }
+
+    # Deconstruct the strategy object to get detailed columns
+    if isinstance(strategy, BaselineStrategy):
+        row.update({
+            "method": "baseline",
+            "chunk_strategy_name": strategy.chunking_strategy.strategy_name,
+            "chunk_size": strategy.chunking_strategy.chunk_size,
+            "embedding_model_company": strategy.embedding_model.company,
+            "embedding_model_name": strategy.embedding_model.model,
+            "embedding_top_k": strategy.embedding_top_k,
+            "rerank_model_company": strategy.rerank_model.company if strategy.rerank_model else None,
+            "rerank_model_name": strategy.rerank_model.model if strategy.rerank_model else None,
+            "rerank_top_k": strategy.rerank_top_k,
+        })
+    elif isinstance(strategy, HybridStrategy):
+        row.update({
+            "method": "hypa",
+            "chunk_strategy_name": strategy.chunk_strategy_name,
+            "chunk_size": strategy.chunk_size,
+            "embedding_model_company": strategy.embedding_model.company,
+            "embedding_model_name": strategy.embedding_model.model,
+            "embedding_top_k": strategy.embedding_top_k,
+            "bm25_top_k": strategy.bm25_top_k,
+            "fusion_top_k": strategy.fusion_top_k,
+            "rerank_model_company": strategy.rerank_model.company if strategy.rerank_model else None,
+            "rerank_model_name": strategy.rerank_model.model if strategy.rerank_model else None,
+            "rerank_top_k": strategy.rerank_top_k,
+        })
+
+    # Add the per-benchmark metrics
+    for benchmark_name in benchmark_name_to_weight:
+        avg_recall, avg_precision = result.get_avg_recall_and_precision(benchmark_name)
+        row[f"{benchmark_name}|recall"] = avg_recall
+        row[f"{benchmark_name}|precision"] = avg_precision
+
+        f1 = float('nan')
+        if not (math.isnan(avg_precision) or math.isnan(avg_recall)) and (avg_precision + avg_recall > 0):
+            f1 = 2 * (avg_precision * avg_recall) / (avg_precision + avg_recall)
+        row[f"{benchmark_name}|f1_score"] = f1
+
+    return row
+
+
 # --- Main Orchestrator ---
 
 async def main(args):
@@ -267,9 +324,8 @@ async def main(args):
             with open(result_filename, "w", encoding='utf-8') as f:
                 f.write(result.model_dump_json(indent=2))
 
-            # Prepare summary row
-            row = {"config_file": config_path, "recall": result.avg_recall, "precision": result.avg_precision,
-                   "f1_score": result.avg_f1_score}
+            # Prepare the DETAILED summary row
+            row = create_summary_row(i, config_path, strategy, result)
             summary_rows.append(row)
 
             print(f"  Overall Avg Recall:    {100 * result.avg_recall: .2f}%")

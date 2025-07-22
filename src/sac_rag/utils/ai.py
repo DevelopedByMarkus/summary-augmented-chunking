@@ -119,6 +119,14 @@ class AIEmbeddingModel(BaseModel):
             case "huggingface":
                 return 8
 
+    @computed_field  # type: ignore[misc]
+    @property
+    def max_batch_tokens(self) -> int:
+        if self.company == "openai":
+            return 250000
+        else:
+            return 1000000000  # No token limit for other companies, so set to a very high number
+
 
 class AIEmbeddingType(Enum):
     DOCUMENT = 1
@@ -439,7 +447,7 @@ async def ai_call(
                     )
                     if not response_message.content or not isinstance(response_message.content[0],
                                                                       anthropic.types.TextBlock) or not isinstance(
-                            response_message.content[0].text, str):
+                        response_message.content[0].text, str):
                         raise AIError(f"Anthropic response content is invalid for model {model.model}")
                     return_value = response_message.content[0].text
                     break
@@ -519,176 +527,126 @@ async def ai_embedding(
     if not texts:
         return []
 
-    valid_texts_with_original_indices: List[tuple[int, str]] = []
-    for i, text in enumerate(texts):
-        if text and isinstance(text, str):
-            valid_texts_with_original_indices.append((i, text))
-        else:
-            logger.warning(f"Invalid or empty text at original index {i} for embedding. Skipping.")
-            # No placeholder needed in text_embeddings if we reconstruct later
-
-    if not valid_texts_with_original_indices:
-        return []  # No valid texts to process
-
-    # Prepare for fetching: map valid text index to its original index
-    text_embeddings_map: Dict[int, list[float] | None] = {orig_idx: None for orig_idx, _ in
-                                                          valid_texts_with_original_indices}
-    indices_to_fetch_map: Dict[int, int] = {}  # Maps new_idx (for required_texts) to original_idx
+    # --- 1. Caching Layer ---
+    text_embeddings_map: Dict[int, list[float]] = {}
+    indices_to_fetch_map: Dict[int, int] = {}
     required_texts_list: List[str] = []
 
-    current_fetch_idx = 0
-    for original_idx, valid_text in valid_texts_with_original_indices:
-        cache_key = get_embeddings_cache_key(model, valid_text, embedding_type)
+    for i, text in enumerate(texts):
+        if not text or not isinstance(text, str):
+            continue
+        cache_key = get_embeddings_cache_key(model, text, embedding_type)
         cached_embedding = cache.get(cache_key)
         if cached_embedding is not None:
-            text_embeddings_map[original_idx] = cached_embedding
+            text_embeddings_map[i] = cached_embedding
             callback()
         else:
-            indices_to_fetch_map[current_fetch_idx] = original_idx
-            required_texts_list.append(valid_text)
-            current_fetch_idx += 1
+            indices_to_fetch_map[len(required_texts_list)] = i
+            required_texts_list.append(text)
 
-    if not required_texts_list:  # All valid texts were cached
-        final_result_from_cache = [None] * len(texts)
-        for orig_idx, emb in text_embeddings_map.items():
-            if emb is not None:
-                final_result_from_cache[orig_idx] = emb
-        return [e for e in final_result_from_cache if
-                e is not None and (isinstance(e, list) and len(e) > 0)]  # type: ignore
+    if not required_texts_list:
+        final_cached = [text_embeddings_map.get(i) for i in range(len(texts))]
+        return [e for e in final_cached if e is not None]
 
-    # Batching for non-HF models if input exceeds max_batch_len
-    if model.company != 'huggingface' and len(required_texts_list) > model.max_batch_len:
-        tasks: list[Coroutine[Any, Any, list[list[float]]]] = []
-        # Create batches from required_texts_list and their corresponding original indices
-        # This part needs to map results back to the original text_embeddings_map structure
+    # --- 2. Token-Aware Batching and API Calls ---
+    all_new_embeddings: list[list[float]] = []
 
-        # Store results from sub-batches mapped by their index within required_texts_list
-        temp_batch_results: Dict[int, list[float]] = {}
+    current_batch: List[str] = []
+    current_batch_tokens = 0
 
-        async def process_sub_batch(sub_batch_texts: List[str], sub_batch_orig_indices_in_req_texts: List[int]):
-            sub_embeddings = await ai_embedding(  # Recursive call
-                model, sub_batch_texts, embedding_type,
-                num_ratelimit_retries=num_ratelimit_retries, backoff_algo=backoff_algo
-                # Callback is handled by the deepest call for non-cached items
+    async def process_batch(batch_to_process: List[str]):
+        """Helper function to process a single, compliant batch."""
+        if not batch_to_process:
+            return []
+
+        ai_conn = await get_ai_connection()
+        embeddings_for_batch: List[List[float]] | None = None
+
+        # This is where the actual API call logic for a single batch goes
+        if model.company == 'huggingface':
+            # HF encoding is synchronous and handled differently
+            return await asyncio.to_thread(
+                _encode_local_huggingface, model.model, batch_to_process, embedding_type, lambda: None
             )
-            for i, emb in enumerate(sub_embeddings):
-                # map back to index in required_texts_list, not original overall index yet
-                temp_batch_results[sub_batch_orig_indices_in_req_texts[i]] = emb
 
-        sub_batch_tasks = []
-        for i in range(0, len(required_texts_list), model.max_batch_len):
-            batch_texts_for_api = required_texts_list[i: i + model.max_batch_len]
-            # These are indices *within* required_texts_list for this sub-batch
-            batch_indices_in_required_texts_list = list(range(i, i + len(batch_texts_for_api)))
-            sub_batch_tasks.append(process_sub_batch(batch_texts_for_api, batch_indices_in_required_texts_list))
-
-        await asyncio.gather(*sub_batch_tasks)
-
-        # Populate text_embeddings_map using temp_batch_results and indices_to_fetch_map
-        for req_text_idx, embedding in temp_batch_results.items():
-            original_idx = indices_to_fetch_map[req_text_idx]
-            text_embeddings_map[original_idx] = embedding
-            cache_key = get_embeddings_cache_key(model, texts[original_idx], embedding_type)
-            cache.set(cache_key, embedding)
-            callback()  # Call callback now that it's processed and cached
-
-        # Reconstruct final list based on original `texts` length
-        final_result = [None] * len(texts)
-        for i, _ in enumerate(texts):
-            final_result[i] = text_embeddings_map.get(i)
-        return [e for e in final_result if e is not None and (isinstance(e, list) and len(e) > 0)]  # type: ignore
-
-    # ---- Process a single batch (or the only batch if not exceeding max_batch_len) ----
-    embeddings_response_current_batch: list[list[float]] | None = None
-    ai_conn = await get_ai_connection()
-
-    if model.company == 'huggingface':
-        embeddings_response_current_batch = await asyncio.to_thread(
-            _encode_local_huggingface, model.model, required_texts_list, embedding_type, callback
-        )
-    elif model.company == "openai":
+        # Logic for API-based models (OpenAI, Cohere, etc.)
         for i_retry in range(num_ratelimit_retries):
             try:
-                async with ai_conn.openai_semaphore_instance:  # Use instance semaphore
-                    rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                    tpm = model.ratelimit_tpm * RATE_LIMIT_RATIO
-                    current_batch_tokens = sum(ai_num_tokens(model, text) for text in required_texts_list)
-                    expected_wait = max(60.0 / rpm if rpm != float('inf') else 0,
-                                        current_batch_tokens / (tpm / 60) if tpm > 0 else 0)
-                    await asyncio.sleep(expected_wait)
-                response = await ai_conn.openai_client.embeddings.create(
-                    input=required_texts_list, model=model.model
-                )
-                if response and response.data:
-                    embeddings_response_current_batch = [e.embedding for e in response.data]
-                    for _ in range(len(required_texts_list)):
-                        callback()
+                if model.company == "openai":
+                    response = await ai_conn.openai_client.embeddings.create(input=batch_to_process, model=model.model)
+                    embeddings_for_batch = [e.embedding for e in response.data]
                     break
-            except (RateLimitError, openai.APIConnectionError, openai.APITimeoutError) as e:
-                logger.warning(f"OpenAI Embedding Error: {e}")
-                if i_retry == num_ratelimit_retries - 1: raise AITimeoutError("Cannot overcome OpenAI Embedding Error")
-                async with ai_conn.openai_semaphore_instance:
-                    await asyncio.sleep(backoff_algo(i_retry))
-    elif model.company == "cohere":
-        for i_retry in range(num_ratelimit_retries):
-            try:
-                async with ai_conn.cohere_semaphore_instance:  # Use instance semaphore
-                    rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                    expected_wait = (60.0 / rpm if rpm != float('inf') else 0)
-                    await asyncio.sleep(expected_wait)
-                result = await ai_conn.cohere_client.embed(
-                    texts=required_texts_list, model=model.model,
-                    input_type="search_document" if embedding_type == AIEmbeddingType.DOCUMENT else "search_query"
-                )
-                embeddings_response_current_batch = cast(List[List[float]], result.embeddings)
-                for _ in range(len(required_texts_list)): callback()
-                break
-            except (cohere.errors.TooManyRequestsError, httpx.RemoteProtocolError, httpx.ReadTimeout) as e:
-                logger.warning(f"Cohere Embedding Error: {e}")
-                if i_retry == num_ratelimit_retries - 1: raise AITimeoutError("Cannot overcome Cohere Embedding Error")
-                async with ai_conn.cohere_semaphore_instance:
-                    await asyncio.sleep(backoff_algo(i_retry))
-    elif model.company == "voyageai":
-        for i_retry in range(num_ratelimit_retries):
-            try:
-                async with ai_conn.voyageai_semaphore_instance:  # Use instance semaphore
-                    rpm = model.ratelimit_rpm * RATE_LIMIT_RATIO
-                    expected_wait = (60.0 / rpm if rpm != float('inf') else 0)
-                    await asyncio.sleep(expected_wait)
-                result = await ai_conn.voyageai_client.embed(
-                    required_texts_list, model=model.model,
-                    input_type="document" if embedding_type == AIEmbeddingType.DOCUMENT else "query"
-                )
-                embeddings_response_current_batch = cast(List[List[float]], result.embeddings)
-                for _ in range(len(required_texts_list)): callback()
-                break
-            except voyageai.error.RateLimitError as e:
-                logger.warning(f"VoyageAI Embedding Error: {e}")
-                if i_retry == num_ratelimit_retries - 1: raise AITimeoutError(
-                    "Cannot overcome VoyageAI Embedding Error")
-                async with ai_conn.voyageai_semaphore_instance:
-                    await asyncio.sleep(backoff_algo(i_retry))
 
-    if embeddings_response_current_batch is None:
-        raise AITimeoutError(f"Failed to get embeddings for model {model.model} (batch part).")
+                elif model.company == "cohere":
+                    result = await ai_conn.cohere_client.embed(
+                        texts=batch_to_process,
+                        model=model.model,
+                        input_type="search_document" if embedding_type == AIEmbeddingType.DOCUMENT else "search_query"
+                    )
+                    embeddings_for_batch = cast(List[List[float]], result.embeddings)
+                    break
 
-    if len(embeddings_response_current_batch) != len(required_texts_list):
-        raise AIError(
-            f"Mismatch in embeddings for required_texts_list: got {len(embeddings_response_current_batch)}, expected {len(required_texts_list)}")
+                elif model.company == "voyageai":
+                    result = await ai_conn.voyageai_client.embed(
+                        batch_to_process,
+                        model=model.model,
+                        input_type="document" if embedding_type == AIEmbeddingType.DOCUMENT else "query"
+                    )
+                    embeddings_for_batch = cast(List[List[float]], result.embeddings)
+                    break
 
-    for i, embedding in enumerate(embeddings_response_current_batch):
-        original_idx = indices_to_fetch_map[i]  # Map back to original index in `texts`
-        text_embeddings_map[original_idx] = embedding
-        cache_key = get_embeddings_cache_key(model, texts[original_idx], embedding_type)
-        cache.set(cache_key, embedding)
-        # Callback was already called for HF, or for each text in API success block.
+            except (RateLimitError, openai.APIConnectionError, openai.APITimeoutError, openai.BadRequestError) as e:
+                logger.warning(f"Embedding API Error on a batch: {e}")
+                if i_retry == num_ratelimit_retries - 1:
+                    raise AITimeoutError(f"Cannot overcome API Error for model {model.model}") from e
+                await asyncio.sleep(backoff_algo(i_retry))
 
-    # Reconstruct final list based on original `texts` length
-    final_result = [None] * len(texts)
-    for i, _ in enumerate(texts):
-        final_result[i] = text_embeddings_map.get(i)  # Get from map which includes cached and newly fetched
+        if embeddings_for_batch is None:
+            raise AIError(f"A batch of embeddings failed for model {model.model}")
+        return embeddings_for_batch
 
-    return [e for e in final_result if e is not None and (isinstance(e, list) and len(e) > 0)]  # type: ignore
+    # --- Main Batching Loop ---
+    for text_to_embed in required_texts_list:
+        # Estimate tokens for the current text
+        # Using a simple estimation here for speed, but ai_num_tokens is more accurate if needed
+        token_estimate = len(text_to_embed) // 3
+
+        # Check if adding the next item would exceed either the item count or the token count
+        if (current_batch and len(current_batch) >= model.max_batch_len) or \
+                (current_batch and model.company == "openai" and current_batch_tokens + token_estimate > model.max_batch_tokens):
+
+            # Process the batch we've built so far
+            processed_embeddings = await process_batch(current_batch)
+            all_new_embeddings.extend(processed_embeddings)
+
+            # Start a new batch
+            current_batch = [text_to_embed]
+            current_batch_tokens = token_estimate
+        else:
+            # Add to the current batch
+            current_batch.append(text_to_embed)
+            current_batch_tokens += token_estimate
+
+    # Process the final remaining batch
+    if current_batch:
+        processed_embeddings = await process_batch(current_batch)
+        all_new_embeddings.extend(processed_embeddings)
+
+    if len(all_new_embeddings) != len(required_texts_list):
+        raise AIError("Mismatch between number of new embeddings and required texts after batching.")
+
+    # --- 3. Update Cache and Final Result Assembly ---
+    for i, new_embedding in enumerate(all_new_embeddings):
+        original_idx = indices_to_fetch_map[i]
+        text_embeddings_map[original_idx] = new_embedding
+
+        text_for_cache = texts[original_idx]
+        cache_key = get_embeddings_cache_key(model, text_for_cache, embedding_type)
+        cache.set(cache_key, new_embedding)
+        callback()
+
+    final_result = [text_embeddings_map.get(i) for i in range(len(texts))]
+    return [e for e in final_result if e is not None]
 
 
 def get_rerank_cache_key(
