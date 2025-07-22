@@ -58,11 +58,11 @@ async def main(args):
     corpus_map = {doc.file_path: doc.content for doc in corpus_docs}
 
     if args.corpus == "debug":
-        test_items, updated_corpus_map = load_alrag_test_set(f"{benchmark_path}/open_australian_legal_qa_first3.jsonl",
+        test_items, updated_corpus_map = load_alrag_test_set(f"{benchmark_path}/alrag_qa_first3.jsonl",
                                                              corpus_map)
         logger.info("Loaded ALRAG test set with 3 questions for debugging.")
     else:
-        test_items, updated_corpus_map = load_alrag_test_set(f"{benchmark_path}/open_australian_legal_qa_full.jsonl",
+        test_items, updated_corpus_map = load_alrag_test_set(f"{benchmark_path}/alrag_qa_full.jsonl",
                                                              corpus_map)
 
     # If the corpus_map was updated, regenerate the list of Document objects for ingestion
