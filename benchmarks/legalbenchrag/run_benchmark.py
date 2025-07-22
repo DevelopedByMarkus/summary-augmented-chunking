@@ -7,6 +7,7 @@ import random
 from typing import List, Tuple
 import pandas as pd
 from pydantic import BaseModel, computed_field, model_validator
+from functools import cached_property
 from tqdm import tqdm
 from typing_extensions import Self
 from datetime import datetime
@@ -15,7 +16,6 @@ from sac_rag.data_models import Benchmark, Document, QAGroundTruth, RetrievalMet
 from sac_rag.utils.credentials import credentials
 from sac_rag.utils.config_loader import load_strategy_from_file
 from sac_rag.utils.retriever_factory import create_retriever
-from sac_rag.utils.utils import sanitize_filename
 
 
 # --- Pydantic Models for this Benchmark's Evaluation Logic ---
@@ -23,39 +23,49 @@ class QAResult(BaseModel):
     qa_gt: QAGroundTruth
     retrieved_snippets: list[RetrievedSnippet]
 
-    @computed_field
-    @property
-    def precision(self) -> float:
-        total_retrieved_len = sum(s.span[1] - s.span[0] for s in self.retrieved_snippets)
-        if total_retrieved_len == 0:
-            return 0.0
-
-        relevant_retrieved_len = 0
+    @cached_property
+    def _relevant_retrieved_length(self) -> int:
+        """Calculates the total character overlap. Is cached after the first call."""
+        overlap_len = 0
         for snippet in self.retrieved_snippets:
             for gt_snippet in self.qa_gt.snippets:
                 if snippet.file_path == gt_snippet.file_path:
+                    # Calculate the length of the overlapping segment
                     overlap_start = max(snippet.span[0], gt_snippet.span[0])
                     overlap_end = min(snippet.span[1], gt_snippet.span[1])
                     if overlap_end > overlap_start:
-                        relevant_retrieved_len += overlap_end - overlap_start
-        return relevant_retrieved_len / total_retrieved_len
+                        overlap_len += overlap_end - overlap_start
+        return overlap_len
+
+    @cached_property
+    def _total_retrieved_length(self) -> int:
+        """Calculates the total length of all retrieved snippets."""
+        return sum(s.span[1] - s.span[0] for s in self.retrieved_snippets)
+
+    @cached_property
+    def _total_relevant_length(self) -> int:
+        """Calculates the total length of all ground truth snippets."""
+        return sum(gt.span[1] - gt.span[0] for gt in self.qa_gt.snippets)
+
+    # --- Public API Properties (now simple and clean) ---
+
+    @computed_field
+    @property
+    def precision(self) -> float:
+        if self._total_retrieved_length == 0:
+            # If nothing was retrieved, precision is conventionally 0 or 1.
+            # 0 is safer as it won't inflate scores for retrievers that return nothing.
+            return 0.0
+        return self._relevant_retrieved_length / self._total_retrieved_length
 
     @computed_field
     @property
     def recall(self) -> float:
-        total_relevant_len = sum(gt.span[1] - gt.span[0] for gt in self.qa_gt.snippets)
-        if total_relevant_len == 0:
+        if self._total_relevant_length == 0:
+            # This case should be rare, but if there's no ground truth text, recall is undefined or 1.
+            # Returning 0.0 is a safe default.
             return 0.0
-
-        relevant_retrieved_len = 0
-        for snippet in self.retrieved_snippets:
-            for gt_snippet in self.qa_gt.snippets:
-                if snippet.file_path == gt_snippet.file_path:
-                    overlap_start = max(snippet.span[0], gt_snippet.span[0])
-                    overlap_end = min(snippet.span[1], gt_snippet.span[1])
-                    if overlap_end > overlap_start:
-                        relevant_retrieved_len += overlap_end - overlap_start
-        return relevant_retrieved_len / total_relevant_len
+        return self._relevant_retrieved_length / self._total_relevant_length
 
 
 def avg(arr: list[float]) -> float:
@@ -262,9 +272,9 @@ async def main(args):
                    "f1_score": result.avg_f1_score}
             summary_rows.append(row)
 
-            print(f"  Overall Avg Recall:    {100 * result.avg_recall:.2f}%")
-            print(f"  Overall Avg Precision: {100 * result.avg_precision:.2f}%")
-            print(f"  Overall Avg F1-Score:  {100 * result.avg_f1_score:.2f}%")
+            print(f"  Overall Avg Recall:    {100 * result.avg_recall: .2f}%")
+            print(f"  Overall Avg Precision: {100 * result.avg_precision: .2f}%")
+            print(f"  Overall Avg F1-Score:  {100 * result.avg_f1_score: .2f}%")
 
         except Exception as e:
             import traceback
