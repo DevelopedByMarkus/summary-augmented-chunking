@@ -6,14 +6,15 @@ import torch
 import asyncio
 from datetime import datetime
 
-from benchmarks.legalbench.src.tasks import TASKS
-from benchmarks.legalbench.src.utils import write_summary_results, write_verbose_output
-from benchmarks.legalbench.src.evaluation import evaluate
-from sac_rag.utils.generate import create_generator  # LLM Generator factory
-from benchmarks.legalbench.src.retrieval import load_corpus_for_dataset, generate_prompts_with_rag_context
-from sac_rag.data_models import Document as LegalBenchRAGDocument  # For type hinting corpus
+from .src.tasks import TASKS
+from .src.utils import write_summary_results, write_verbose_output
+from .src.evaluation import evaluate
+from .src.retrieval import load_corpus_for_dataset, generate_prompts_with_rag_context
+
+from sac_rag.data_models import Document as SacRagDocument
 from sac_rag.utils.config_loader import load_strategy_from_file
 from sac_rag.utils.retriever_factory import create_retriever
+from sac_rag.utils.generate import create_generator
 
 _license_cache = {}
 BASE_PROMPT_FILENAME = "claude_prompt.txt"  # refined prompt, or could be "base_prompt.txt"
@@ -97,33 +98,32 @@ async def main(args):
         print("\nNo tasks selected to run. Exiting.")
         return
 
+    # --- Initialize Generator and Retriever ---
     try:
         llm_generator = create_generator(args)
-
-        # Initialize retriever
         retriever = None
-        retrieval_strategy = None
 
         if args.retrieval_config:
             print(f"RAG mode enabled. Loading config from: {args.retrieval_config}")
-            # 1. Load the strategy configuration from the file
             retrieval_strategy = load_strategy_from_file(args.retrieval_config)
-
-            # 2. Use the factory to create the retriever instance
             retriever = create_retriever(retrieval_strategy)
+        else:
+            print("No retrieval config provided. Running in 'No RAG' mode.")
 
-    except ValueError as e:
+    except (ValueError, TypeError) as e:
         print(f"Error creating generator or retriever: {e}")
         return
     except Exception as e:
-        print(f"Unexpected error creating generator/retriever: {e}")
         import traceback
+        print(f"Unexpected error during setup: {e}")
         traceback.print_exc()
         return
 
-    retrieval_strategy_name_for_logging = args.retrieval_strategy
-    if retrieval_strategy_name_for_logging == "X":
-        retrieval_strategy_name_for_logging = "None"
+    if args.retrieval_config:
+        config_basename = os.path.basename(args.retrieval_config)
+        retrieval_strategy_name_for_logging, _ = os.path.splitext(config_basename)
+    else:
+        retrieval_strategy_name_for_logging = "No-RAG"
 
     all_tasks_results_summary = {}
     retrievers_cache = {}  # Cache for initialized retrievers per top-level dataset_id
@@ -197,7 +197,7 @@ async def main(args):
                     if dataset_id not in retrievers_cache:
                         print(f"Initializing retriever and corpus for dataset: {dataset_id}")
                         if dataset_id not in corpus_cache:
-                            corpus_docs: list[LegalBenchRAGDocument] = load_corpus_for_dataset(dataset_id)
+                            corpus_docs: list[SacRagDocument] = load_corpus_for_dataset(dataset_id)
                             corpus_cache[dataset_id] = corpus_docs
                         else:
                             corpus_docs = corpus_cache[dataset_id]
@@ -375,32 +375,19 @@ async def main(args):
     for task_k_key, results in all_tasks_results_summary.items():  # Iterate through the collected results
         print(f"Task_K_Config: {task_k_key}, Results: {results}")
 
-    # Cleanup retrievers
-    for dataset_id_key, retriever_instance in retrievers_cache.items():
-        if hasattr(retriever_instance, 'cleanup'):
-            print(f"Cleaning up retriever for {dataset_id_key}...")
-            await retriever_instance.cleanup()
+    if retriever and hasattr(retriever, 'cleanup'):
+        print("Cleaning up retriever...")
+        await retriever.cleanup()
 
-    # Cleanup LLM Generator's HTTP client
     if llm_generator and hasattr(llm_generator, 'close_http_client'):
-        try:
-            await llm_generator.close_http_client()
-        except Exception as e:
-            print(f"Error closing LLM generator's HTTP client: {e}")
+        await llm_generator.close_http_client()
 
-    try:
-        from src.sac_rag.utils.ai import close_all_ai_connections
-        if callable(close_all_ai_connections):
-            await close_all_ai_connections()
-    except ImportError:
-        print("Note: close_all_ai_connections not found in legalbenchrag.utils.ai.")
-    except Exception as e:
-        print(f"Error closing global AI connections: {e}")
+    from sac_rag.utils.ai import close_all_ai_connections
+    await close_all_ai_connections()
 
     end_timestamp = datetime.now()
-    end_ts_str = end_timestamp.strftime('%Y%m%d_%H%M%S')
-    print(f"\nScript finished at (YYYYmmdd_HHMMSS): {end_ts_str}")
-    print(f"Run took so long: {end_timestamp - start_timestamp}")
+    print(f"\nScript finished at: {end_timestamp.strftime('%Y%m%d_%H%M%S')}")
+    print(f"Total duration: {end_timestamp - start_timestamp}")
 
 
 if __name__ == "__main__":
@@ -421,23 +408,19 @@ if __name__ == "__main__":
                         help="Maximum new tokens for LLM generation.")  # Increased default
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for local LLM inference.")
 
-    # legacy: parser.add_argument("--retrieval_strategy", "-r", type=str, default="s-rcts_oai3S_X", choices=["s-rcts_oai3S_X", "rcts_oai3S_X", "X"], help="Name of the retrieval strategy (from retrieval.py configs, or 'X' for no retrieval).")
-    parser.add_argument(
-        "--retrieval-config", "-rc", type=str,
-        help="Path to the retrieval strategy JSON config file. If not provided, runs in 'No RAG' mode."
-    )
-    parser.add_argument("--final_top_k", type=int, nargs='+', default=[4],
-                        help="Number of top retrieved snippets to use for context (can be multiple values for multiple runs)."
-                             "If 'X' is set as retrieval_strategy, this is set to [0].")
+    parser.add_argument("--retrieval-config", "-rc", type=str, help="Path to the retrieval strategy JSON config file.")
 
-    parser.add_argument("--result_dir", type=str, default="../../results/legalbench/results")
-    parser.add_argument("--prompt_dir", type=str, default="../../results/legalbench/output")
+    parser.add_argument("--final_top_k", type=int, nargs='+', default=[4],
+                        help="List of K values for context snippets.")
+
+    parser.add_argument("--result_dir", type=str, default="./results/legalbench")
+    parser.add_argument("--prompt_dir", type=str, default="./results/legalbench/output")
 
     parser.add_argument("--verbose", "-v", action="store_true", help="Write detailed output CSV for each task.")
 
     parsed_args = parser.parse_args()
 
     if not TASKS:
-        print("Error: The global TASKS list is empty. Please populate it from legalbench.tasks.")
+        print("Error: The global TASKS list is empty.")
     else:
         asyncio.run(main(parsed_args))
