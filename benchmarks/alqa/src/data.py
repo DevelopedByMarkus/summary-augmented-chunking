@@ -3,8 +3,8 @@ import logging
 from typing import List, Dict, Tuple
 from tqdm import tqdm
 
-from src.sac_rag.data_models import Document
-from benchmarks.alqa.src.result_models import ALQATestItem, ALQAGroundTruthInfo
+from sac_rag.data_models import Document
+from .result_models import ALQATestItem, ALQAGroundTruthInfo
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
