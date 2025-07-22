@@ -1,4 +1,11 @@
-This explains the config file arguments
+## Description of the Config files
+
+To have a more efficient way of handling the setting of the retriever part, the setting of them are part of a json file.
+This also helps reproducibility.
+
+The parameters should be self explaining. However, currently the two methods `baseline` and `hybrid` need different json structures. There are already two json config files existing as an example. One for each method.
+
+## Models that I have used (just for achieve purposes)
 
 ### Embedding Models (used by both)
 - oai_embed_model = AIEmbeddingModel(company="openai", model="text-embedding-3-large")
