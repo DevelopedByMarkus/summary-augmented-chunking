@@ -1,8 +1,8 @@
 import numpy as np
 from typing import List, Dict, Optional, Any
 
-from src.sac_rag.data_models import RetrievedSnippet
-from src.sac_rag.utils.ai import ai_embedding, AIEmbeddingModel, AIEmbeddingType
+from sac_rag.data_models import RetrievedSnippet
+from sac_rag.utils.ai import ai_embedding, AIEmbeddingModel, AIEmbeddingType
 
 
 async def evaluate_answer_similarity(
