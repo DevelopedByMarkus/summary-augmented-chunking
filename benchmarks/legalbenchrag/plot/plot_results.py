@@ -9,25 +9,23 @@ import sys
 from collections import defaultdict
 import re
 
-from src.sac_rag.utils.utils import ABBREVIATIONS
+from sac_rag.utils.utils import ABBREVIATIONS
 
 # --- Constants ---
 
 IDENTIFYING_COLS = ['method', 'embedding_model_name', 'chunk_strategy_name', 'rerank_model_name']
 METRICS_TO_PLOT = {'precision': 'Precision', 'recall': 'Recall', 'f1_score': 'F1-Score'}
 LINESTYLES = ['-', '--', '-.', ':']
-DEFAULT_K = 64  # Default K if none found, though the logic should prevent this
+DEFAULT_K = 64
 
 
-# --- Helper Functions (Originals, mostly unchanged) ---
+# --- Helper Functions ---
 
 
 def get_k_value(row):
     """
     Determines the 'k' value based on the specified fallback logic.
-    Uses the exact logic provided in the requirement description.
     """
-    # --- Determine Final Top K ---
     final_k = None
     k_found = False
 
@@ -52,14 +50,7 @@ def get_k_value(row):
             final_k = fusion_k_val
             k_found = True
 
-    # Check embedding_topk if still not found
-    if not k_found:
-        embed_k_val = row.get('embedding_topk')
-        if pd.notna(embed_k_val) and isinstance(embed_k_val, (int, float, np.integer, np.floating)) and embed_k_val > 0:
-            final_k = embed_k_val
-            k_found = True
-
-    # Check embedding_top_k if still not found
+    # Check embedding_top_k (Corrected from embedding_topk)
     if not k_found:
         embed_k_val = row.get('embedding_top_k')
         if pd.notna(embed_k_val) and isinstance(embed_k_val, (
@@ -67,13 +58,9 @@ def get_k_value(row):
             final_k = embed_k_val
             k_found = True
 
-    # Check if a K was found
     if not k_found or final_k is None:
-        # Instead of printing a warning here, we'll handle NaN K later during data cleaning.
-        # Returning NaN allows us to filter rows where K couldn't be determined.
-        return np.nan  # Indicate K could not be found
+        return np.nan
 
-    # Ensure it's an integer
     return int(final_k)
 
 
@@ -86,16 +73,14 @@ def abbreviate_strategy(strategy_series: pd.Series) -> str:
         chunk_abbr = ABBREVIATIONS["chunking"].get(strategy_series['chunk_strategy_name'],
                                                    strategy_series['chunk_strategy_name'][:5])
 
-        # Handle potential None/NaN for reranker - map to '<None>' before lookup
         reranker_key = strategy_series['rerank_model_name'] if pd.notna(
             strategy_series['rerank_model_name']) else '<None>'
         rerank_abbr = ABBREVIATIONS["reranker"].get(reranker_key,
-                                                    str(reranker_key)[:4])  # Use abbreviated key if not found
+                                                    str(reranker_key)[:4])
 
         return f"{method_abbr}_{embed_abbr}_{chunk_abbr}_{rerank_abbr}"
     except Exception as e:
         print(f"Warning: Error abbreviating strategy {strategy_series.to_dict()}: {e}")
-        # Fallback to concatenating raw values
         return "_".join(map(str, strategy_series[IDENTIFYING_COLS].fillna('NaN')))
 
 
@@ -123,14 +108,14 @@ def load_and_consolidate_data(csv_paths: list[Path]) -> pd.DataFrame | None:
     return master_df
 
 
-def get_strategy_groups_from_user(unique_strategies: pd.DataFrame) -> dict[str, list[int]] | None:
+def get_strategy_groups_from_user(unique_strategies: pd.DataFrame):
     """Identifies unique strategies, asks user for grouping, validates input."""
     print("\n--- Found Unique Strategies ---")
-    strategy_map = {}  # Store mapping from ID to original strategy details
-    for i, (index, strategy_details) in enumerate(unique_strategies.iterrows()):
+    strategy_map = {}
+    for i, (_, strategy_details) in enumerate(unique_strategies.iterrows()):
         abbreviated_name = abbreviate_strategy(strategy_details)
         print(f"[{i}]: {abbreviated_name}")
-        strategy_map[i] = strategy_details.to_dict()  # Store original identifying values
+        strategy_map[i] = strategy_details.to_dict()
 
     print("\nPlease provide a dictionary to group strategies for plotting.")
     print("Example: {'Group A': [0, 2], 'Group B': [1, 3]}")
