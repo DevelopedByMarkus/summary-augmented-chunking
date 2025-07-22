@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from tqdm.auto import tqdm
 import datasets
 import os
@@ -18,7 +20,7 @@ from sac_rag.utils.generation import create_generator
 
 _license_cache = {}
 BASE_PROMPT_FILENAME = "claude_prompt.txt"  # refined prompt, or could be "base_prompt.txt"
-base_task_files_path = "legalbench/tasks"
+base_task_files_path = Path.cwd() / "benchmarks" / "legalbench" / "tasks"
 
 
 def get_task_license(task_name, repo_id="nguha/legalbench"):
@@ -180,7 +182,9 @@ async def main(args):
                 current_task_prompts_to_llm = []  # Prompts after RAG, for this task
 
                 # Determine top-level dataset_id (e.g., "cuad" from "cuad_...")
-                if task_name.startswith("cuad"):
+                if args.debug:
+                    dataset_id = "cuad_test"
+                elif task_name.startswith("cuad"):
                     dataset_id = "cuad"
                 elif task_name.startswith("maud"):
                     dataset_id = "maud"
@@ -190,7 +194,6 @@ async def main(args):
                     dataset_id = "privacy_qa"
                 else:
                     dataset_id = ""  # handled in load_corpus_for_dataset()
-                # dataset_id = "cuad_test"  # TODO: Just for debugging
 
                 # --- Retrieval Step ---
                 if retriever:  # Only if a retrieval strategy is chosen
@@ -217,7 +220,7 @@ async def main(args):
                                                                                    '_ingested_marker_' + dataset_id):
                                 # If retriever not cached for this dataset OR not marked as ingested for this dataset
                                 print(
-                                    f"Ingesting {len(corpus_docs)} documents for {dataset_id} into {args.retrieval_strategy}...")
+                                    f"Ingesting {len(corpus_docs)} documents for {dataset_id} into {retrieval_strategy_name_for_logging}...")
 
                                 async def ingest_op():
                                     # Important: If retriever instance is shared, ensure it handles new corpus correctly
@@ -292,7 +295,7 @@ async def main(args):
                                 original_queries_for_verbose.append(original_query_text)
                                 final_prompts_for_llm_verbose.append(final_prompt)
                                 query_responses_for_verbose.append(query_response_obj)
-                else:  # No retriever chosen (retrieval_strategy == "X")
+                else:  # No retriever chosen
                     print("No retrieval strategy selected. Generating prompts without retrieved context.")
                     for i, row in test_df.iterrows():
                         original_query_text = row['text']
@@ -331,7 +334,7 @@ async def main(args):
 
                 if args.verbose:
                     write_verbose_output(
-                        args.prompt_dir, task_name, args.model_name, args.retrieval_strategy, current_final_top_k,
+                        args.prompt_dir, task_name, args.model_name, retrieval_strategy_name_for_logging,
                         original_indices_for_verbose,
                         original_queries_for_verbose,
                         final_prompts_for_llm_verbose,
@@ -402,8 +405,8 @@ if __name__ == "__main__":
                         help="Name/path of the LLM (e.g., 'gpt-4o', 'meta-llama/Llama-2-7b-chat-hf').")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device for local models.")
-    parser.add_argument("--temperature", type=float, default=0.7,
-                        help="Sampling temperature for LLM generation.")  # Changed default to 0.7
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="Sampling temperature for LLM generation.")
     parser.add_argument("--max_new_tokens", type=int, default=512,
                         help="Maximum new tokens for LLM generation.")  # Increased default
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for local LLM inference.")
@@ -413,10 +416,11 @@ if __name__ == "__main__":
     parser.add_argument("--final_top_k", type=int, nargs='+', default=[4],
                         help="List of K values for context snippets.")
 
-    parser.add_argument("--result_dir", type=str, default="./results/legalbench")
+    parser.add_argument("--result_dir", type=str, default="./results/legalbench/results")
     parser.add_argument("--prompt_dir", type=str, default="./results/legalbench/output")
 
     parser.add_argument("--verbose", "-v", action="store_true", help="Write detailed output CSV for each task.")
+    parser.add_argument("--debug", "-d", action="store_true", help="Just use a minimal corpus.")
 
     parsed_args = parser.parse_args()
 

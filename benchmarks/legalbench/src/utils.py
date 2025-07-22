@@ -3,7 +3,7 @@ import os
 import re
 
 
-def write_verbose_output(output_dir, task_name, model_name, retreival_strategy, final_top_k, item_indices, original_queries, final_prompts_to_llm,
+def write_verbose_output(output_dir, task_name, model_name, retrieval_config: str, item_indices, original_queries, final_prompts_to_llm,
                          generations, gold_answers, query_responses=None, timestamp=None):
     """Writes detailed output to a CSV file for a given task.
     item_indices: list of original indices from the test_df.
@@ -17,9 +17,8 @@ def write_verbose_output(output_dir, task_name, model_name, retreival_strategy, 
     safe_task_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in task_name)
     safe_model_name = model_name.replace("/", "_").replace("\\", "_")
     safe_model_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in safe_model_name)
-    safe_retrieval_strat = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in retreival_strategy)
 
-    filename = os.path.join(output_dir, f"{safe_task_name}_{safe_model_name}_{safe_retrieval_strat}_k{final_top_k}_{timestamp}.csv")
+    filename = os.path.join(output_dir, f"{safe_task_name}_{safe_model_name}_{retrieval_config}_{timestamp}.csv")
 
     print(f"Writing verbose output to: {filename}")
 
@@ -37,7 +36,6 @@ def write_verbose_output(output_dir, task_name, model_name, retreival_strategy, 
                 'final_llm_prompt': final_prompts_to_llm[i] if i < len(final_prompts_to_llm) else "N/A",
                 'generated_output': generations[i] if i < len(generations) else "N/A (generation missing)",
                 'gold_answer': gold_answers[i] if i < len(gold_answers) else "N/A (gold_answer missing)",
-                'final_top_k': final_top_k,
                 'num_retrieved_snippets': "N/A",
                 'retrieved_snippets_full_text': "N/A",
             }
