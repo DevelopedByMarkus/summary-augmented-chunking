@@ -61,44 +61,66 @@ class HybridStrategy(BaseModel):  # TODO: Refactor pydantic model so that it has
 
 
 # --- Helper Function for Fusion ---
-def fuse_results(results_dict: Dict[str, List[NodeWithScore]], similarity_top_k: int) -> List[NodeWithScore]:
-    """Fuse results using Reciprocal Rank Fusion."""
-    k = 60.0  # RRF parameter
+def fuse_results_weighted_rrf(
+        results_dict: Dict[str, List[NodeWithScore]],
+        similarity_top_k: int,
+        weights: Dict[str, float] = None,
+        k: float = 60.0,
+) -> List[NodeWithScore]:
+    """
+    Fuses results from multiple retrievers using Weighted Reciprocal Rank Fusion.
+
+    Args:
+        results_dict: A dictionary where keys are retriever names (e.g., "bm25", "vector")
+                      and values are lists of ranked NodeWithScore.
+        similarity_top_k: The number of top results to return.
+        weights: A dictionary mapping retriever names to their fusion weight.
+                 The weights should ideally sum to 1.
+        k: The ranking constant for RRF (default is 60).
+    """
+    if weights is None:
+        weights = {"bm25": 0.0, "vector": 1.0}  # Default weights for bm25 and vector retrievers
+    # Ensure that all retrievers in the results have a corresponding weight
+    if not all(key in weights for key in results_dict.keys()):
+        raise ValueError(
+            "The 'weights' dictionary must contain a key for each retriever in 'results_dict'."
+        )
+
     fused_scores: Dict[str, float] = {}
     text_to_node: Dict[str, NodeWithScore] = {}
 
-    all_nodes_with_scores: List[NodeWithScore] = []
-    for nodes_with_scores_list in results_dict.values():
-        all_nodes_with_scores.extend(nodes_with_scores_list)
+    # Iterate through each retriever's result list
+    for retriever_name, nodes_with_scores in results_dict.items():
+        retriever_weight = weights.get(retriever_name, 0)
+        if retriever_weight == 0:
+            continue
 
-    # Deduplicate nodes based on node_id first, keeping the highest score
-    unique_nodes_by_id: Dict[str, NodeWithScore] = {}
-    for node_with_score in all_nodes_with_scores:
-        node_id = node_with_score.node.node_id  # type: ignore
-        current_score = node_with_score.score if node_with_score.score is not None else -float('inf')
+        # For each document in the list, calculate its weighted reciprocal rank
+        for rank, node_with_score in enumerate(nodes_with_scores):
+            node_id = node_with_score.node.node_id
+            if not node_id:
+                continue
 
-        existing_node_entry = unique_nodes_by_id.get(node_id)
-        existing_score = -float('inf')
-        if existing_node_entry and existing_node_entry.score is not None:
-            existing_score = existing_node_entry.score
+            # If we see this node for the first time, add it to our mapping
+            if node_id not in text_to_node:
+                text_to_node[node_id] = node_with_score
 
-        if node_id not in unique_nodes_by_id or current_score > existing_score:  # type: ignore
-            unique_nodes_by_id[node_id] = node_with_score  # type: ignore
+            # Calculate the weighted RRF score and add it to the existing score
+            # for that node. The .get() method handles the first time we see a node.
+            current_score = fused_scores.get(node_id, 0.0)
+            fused_scores[node_id] = current_score + retriever_weight * (1.0 / (k + rank))
 
-    sorted_nodes = sorted(unique_nodes_by_id.values(), key=lambda x: x.score or 0.0, reverse=True)
+    # Sort the nodes based on their final fused scores in descending order
+    reranked_ids = sorted(
+        fused_scores.keys(), key=lambda x: fused_scores[x], reverse=True
+    )
 
-    for rank, node_with_score in enumerate(sorted_nodes):
-        node_id = node_with_score.node.node_id  # type: ignore
-        text_to_node[node_id] = node_with_score  # type: ignore
-        if node_id not in fused_scores:  # type: ignore
-            fused_scores[node_id] = 0.0  # type: ignore
-        fused_scores[node_id] += 1.0 / (rank + k)  # type: ignore
-
-    reranked_ids = sorted(fused_scores.keys(), key=lambda x: fused_scores[x], reverse=True)
-
+    # Build the final list of NodeWithScore objects
     reranked_nodes: List[NodeWithScore] = []
     for node_id in reranked_ids:
+        # Retrieve the original NodeWithScore object
         node_with_score = text_to_node[node_id]
+        # Update its score to the new fused score
         node_with_score.score = fused_scores[node_id]
         reranked_nodes.append(node_with_score)
 
@@ -293,7 +315,7 @@ class HybridRetrievalMethod(RetrievalMethod):
         }
 
         # 3. Fuse results
-        fused_nodes = fuse_results(results_dict, similarity_top_k=self.strategy.fusion_top_k)
+        fused_nodes = fuse_results_weighted_rrf(results_dict, similarity_top_k=self.strategy.fusion_top_k)
 
         # 4. Optional Reranking Step
         final_nodes = fused_nodes
