@@ -98,20 +98,6 @@ async def get_chunks(  # Made async
                 f"Summarization model or prompt template not provided for strategy '{strategy_name}' "
                 f"on document {document.file_path}. Summary step will be skipped (fallback in generate_document_summary)."
             )
-            # generate_document_summary has its own fallback, so we can still call it.
-            # It will use the first N chars of the document.
-            document_summary = await generate_document_summary(  # Fallback will be used
-                document_file_path=document.file_path,
-                document_content=document.content,
-                # Passing None or incorrect model would cause issues; ensure fallback in generate_document_summary is robust
-                summarization_model=AIModel(company="openai", model="gpt-4o-mini"),
-                # Dummy, will trigger fallback if openai only
-                summary_prompt_template="FALLBACK_DUE_TO_MISSING_CONFIG",  # Indicates issue
-                prompt_target_char_length=prompt_target_char_length,
-                truncate_char_length=summary_truncation_length,
-                summaries_output_dir_base=summaries_base_dir
-            )
-
         else:
             # logger.info(f"Generating summary for document: {document.file_path} using strategy {strategy_name}")
             document_summary = await generate_document_summary(

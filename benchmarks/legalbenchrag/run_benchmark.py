@@ -18,6 +18,7 @@ from sac_rag.utils.config_loader import load_strategy_from_file
 from sac_rag.utils.retriever_factory import create_retriever
 from sac_rag.methods.baseline import RetrievalStrategy as BaselineStrategy
 from sac_rag.methods.hybrid import HybridStrategy
+from sac_rag.utils.utils import sanitize_filename
 
 
 # --- Pydantic Models for this Benchmark's Evaluation Logic ---
@@ -160,8 +161,8 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
     """Loads, samples, and prepares all data needed for the benchmark."""
     all_tests, weights, used_doc_paths = [], [], set()
 
-    for name, weight in benchmark_name_to_weight.items():
-        benchmark_file = f"./data/benchmarks/{name}.json"
+    for dataset_name, weight in benchmark_name_to_weight.items():
+        benchmark_file = f"./data/benchmarks/{dataset_name}.json"
         if not os.path.exists(benchmark_file):
             print(f"Warning: Benchmark file not found: {benchmark_file}. Skipping.")
             continue
@@ -172,17 +173,21 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
         # Sampling logic
         sampled_tests = tests
         if 0 < max_tests < len(tests):
-            print(f"Sampling {max_tests} tests from {name} ({len(tests)} total)")
+            print(f"Sampling {max_tests} tests from {dataset_name} ({len(tests)} total)")
             if sort_by_doc:
                 tests = sorted(tests, key=lambda t: t.snippets[0].file_path if t.snippets else "")
             else:
-                random.seed(name + str(max_tests))
+                random.seed(dataset_name + str(max_tests))
                 random.shuffle(tests)
             sampled_tests = tests[:max_tests]
 
-        used_doc_paths.update(s.file_path for t in sampled_tests for s in t.snippets)
         for t in sampled_tests:
-            t.tags = [name]
+            for s in t.snippets:
+                sanitized_path = sanitize_filename(s.file_path, f"{dataset_name}/")
+                used_doc_paths.add(sanitized_path)
+
+        for t in sampled_tests:
+            t.tags = [dataset_name]
 
         all_tests.extend(sampled_tests)
         if sampled_tests:
@@ -268,6 +273,8 @@ def create_summary_row(idx: int, config_path: str, strategy: Any, result: Benchm
             "rerank_model_name": strategy.rerank_model.model if strategy.rerank_model else None,
             "rerank_top_k": strategy.rerank_top_k,
         })
+    else:
+        print("WARNING: Unsupported strategy type. Skipping.")
 
     # Add the per-benchmark metrics
     for benchmark_name in benchmark_name_to_weight:
@@ -290,7 +297,7 @@ async def main(args):
     logging.getLogger("bm25s").setLevel(logging.WARNING)
 
     start_time = datetime.now()
-    print(f"Starting ALRAG benchmark run at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Starting Legalbench-RAG benchmark run at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     os.environ["OPENAI_API_KEY"] = credentials.ai.openai_api_key.get_secret_value()
     os.environ["COHERE_API_KEY"] = credentials.ai.cohere_api_key.get_secret_value()

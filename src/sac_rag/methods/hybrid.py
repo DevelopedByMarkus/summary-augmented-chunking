@@ -56,6 +56,7 @@ class HybridStrategy(BaseModel):  # TODO: Refactor pydantic model so that it has
     embedding_top_k: int
     bm25_top_k: int
     fusion_top_k: int
+    fusion_weight: float = 0.5
     rerank_model: AIRerankModel | None = None
     rerank_top_k: int | None = None
 
@@ -80,6 +81,7 @@ def fuse_results_weighted_rrf(
     """
     if weights is None:
         weights = {"bm25": 0.0, "vector": 1.0}  # Default weights for bm25 and vector retrievers
+    print(f"fusion weight: {weights}")
     # Ensure that all retrievers in the results have a corresponding weight
     if not all(key in weights for key in results_dict.keys()):
         raise ValueError(
@@ -314,8 +316,11 @@ class HybridRetrievalMethod(RetrievalMethod):
             'bm25': task_results[1] if len(task_results) > 1 else [],
         }
 
+        bm25_weight = 1 - self.strategy.fusion_weight
+        fusion_weight = {"bm25": bm25_weight, "vector": self.strategy.fusion_weight}
+
         # 3. Fuse results
-        fused_nodes = fuse_results_weighted_rrf(results_dict, similarity_top_k=self.strategy.fusion_top_k)
+        fused_nodes = fuse_results_weighted_rrf(results_dict, similarity_top_k=self.strategy.fusion_top_k, weights=fusion_weight)
 
         # 4. Optional Reranking Step
         final_nodes = fused_nodes
