@@ -1,0 +1,23 @@
+{
+  "strategy_type": "hybrid",
+  "chunk_strategy_name": "summary_rcts",
+  "chunk_size": 500,
+  "chunk_overlap_ratio": 0.0,
+  "summary_model": {
+      "company": "openai",
+      "model": "gpt-4o-mini"
+    },
+  "summary_prompt_template": "System: You are an expert legal document summarizer. User: Summarize the following legal document text. Focus on extracting the most important entities, core purpose, and key legal topics. The summary must be concise, maximum {target_char_length} characters long, and optimized for providing context to smaller text chunks. Output only the summary text. Document:\n{document_content}",
+  "prompt_target_char_length": 150,
+  "summary_truncation_length": 170,
+  "embedding_model": {
+    "company": "openai",
+    "model": "text-embedding-3-large"
+  },
+  "embedding_top_k": 64,
+  "bm25_top_k": 64,
+  "fusion_top_k": 4,
+  "fusion_weights": 0.5,
+  "rerank_model": null,
+  "rerank_top_k": 4
+}
