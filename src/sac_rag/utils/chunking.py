@@ -1,14 +1,26 @@
 from pathlib import Path
-from typing import List, Optional, cast  # Added Optional
+from typing import List, Optional, cast, Literal
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel
-import logging  # For logging
+import logging
 
 from sac_rag.data_models import Document
 from sac_rag.utils.ai import AIModel, generate_document_summary
 
-logger = logging.getLogger(__name__)  # Setup logger for this module
+logger = logging.getLogger(__name__)
+
+
+class ChunkingStrategy(BaseModel):
+    strategy_name: Literal["naive", "rcts", "summary_naive", "summary_rcts"]
+    chunk_size: int  # For summary strategies, this is the TOTAL target length
+    chunk_overlap_ratio: float = 0.0
+
+    # Fields for summarization - these will be None for non-summary strategies
+    summary_model: Optional[AIModel] = None
+    summary_prompt_template: Optional[str] = None
+    prompt_target_char_length: int = 150  # Default target for LLM prompt
+    summary_truncation_length: int = 170  # Default hard truncation limit
 
 
 class Chunk(BaseModel):
@@ -72,7 +84,7 @@ def _chunk_recursive(document_content: str, chunk_size: int, chunk_overlap_ratio
 async def get_chunks(  # Made async
         document: Document,
         strategy_name: str,
-        chunk_size: int,  # For summary strategies, this is TOTAL target chunk size
+        chunk_size: int,
         **kwargs
 ) -> List[Chunk]:
     """
@@ -80,7 +92,7 @@ async def get_chunks(  # Made async
     Supports new strategies that prepend a document summary.
     """
     final_chunks: List[Chunk] = []
-    document_summary = ""  # Initialize summary
+    document_summary = ""
     is_summary_strategy = strategy_name.startswith("summary_")
 
     if not is_summary_strategy and cast(Optional[AIModel], kwargs.get("summarization_model")):
@@ -115,8 +127,6 @@ async def get_chunks(  # Made async
 
     # Define the format for summary prefix
     summary_prefix = f"[document summary] {document_summary}\n[content] " if is_summary_strategy and document_summary else ""
-    # If not a summary strategy, or if summary is empty (e.g. after fallback from failed LLM), prefix is empty.
-    # If summary strategy AND summary is present, then prefix is used.
 
     actual_summary_component_len = len(
         summary_prefix)  # This includes the "[document summary]..." and "[content]" parts

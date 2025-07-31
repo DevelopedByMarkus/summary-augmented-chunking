@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import struct
-from typing import Literal, cast, List, Optional, Dict
+from typing import cast, List, Dict
 import asyncio
 import logging
 from pathlib import Path
@@ -20,12 +20,11 @@ from sac_rag.utils.ai import (
     AIEmbeddingModel,
     AIEmbeddingType,
     AIRerankModel,
-    AIModel,
     ai_embedding,
     ai_rerank,
     generate_document_summary
 )
-from sac_rag.utils.chunking import Chunk, get_chunks
+from sac_rag.utils.chunking import Chunk, get_chunks, ChunkingStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -36,21 +35,6 @@ def serialize_f32(vector: list[float]) -> bytes:
 
 
 SHOW_LOADING_BAR = True
-
-
-class ChunkingStrategy(BaseModel):
-    # Use strategy_name defined in chunking.py
-    # Updated Literal to include new summary strategies
-    strategy_name: Literal["naive", "rcts", "summary_naive", "summary_rcts"]
-    chunk_size: int  # For summary strategies, this is the TOTAL target length
-    # Add overlap config if rcts uses it
-    chunk_overlap_ratio: float = 0.0  # Used if base strategy is rcts
-
-    # New fields for summarization - these will be None for non-summary strategies
-    summary_model: Optional[AIModel] = None
-    summary_prompt_template: Optional[str] = None
-    prompt_target_char_length: int = 150  # Default target for LLM prompt
-    summary_truncation_length: int = 170  # Default hard truncation limit
 
 
 class RetrievalStrategy(BaseModel):
