@@ -2,11 +2,11 @@ import json
 from typing import Union
 from pydantic import ValidationError
 
-from sac_rag.methods.baseline import RetrievalStrategy as BaselineStrategy
+from sac_rag.methods.baseline import BaselineRetrievalStrategy
 from sac_rag.methods.hybrid import HybridStrategy
 
 # A type hint for any of our possible strategy models
-AnyRetrievalStrategy = Union[BaselineStrategy, HybridStrategy]
+AnyRetrievalStrategy = Union[BaselineRetrievalStrategy, HybridStrategy]
 
 
 def load_strategy_from_file(filepath: str) -> AnyRetrievalStrategy:
@@ -26,7 +26,7 @@ def load_strategy_from_file(filepath: str) -> AnyRetrievalStrategy:
     if strategy_type == "hybrid":
         model = HybridStrategy
     elif strategy_type == "baseline":
-        model = BaselineStrategy
+        model = BaselineRetrievalStrategy
     else:
         raise ValueError(
             f"Invalid 'strategy_type' in {filepath}: '{strategy_type}'. "

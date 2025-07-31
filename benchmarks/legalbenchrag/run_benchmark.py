@@ -16,7 +16,7 @@ from sac_rag.data_models import Benchmark, Document, QAGroundTruth, RetrievalMet
 from sac_rag.utils.credentials import credentials
 from sac_rag.utils.config_loader import load_strategy_from_file
 from sac_rag.utils.retriever_factory import create_retriever
-from sac_rag.methods.baseline import RetrievalStrategy as BaselineStrategy
+from sac_rag.methods.baseline import BaselineRetrievalStrategy
 from sac_rag.methods.hybrid import HybridStrategy
 from sac_rag.utils.utils import sanitize_filename
 
@@ -247,7 +247,7 @@ def create_summary_row(idx: int, config_path: str, strategy: Any, result: Benchm
     }
 
     # Deconstruct the strategy object to get detailed columns
-    if isinstance(strategy, BaselineStrategy):
+    if isinstance(strategy, BaselineRetrievalStrategy):
         row.update({
             "method": "baseline",
             "chunk_strategy_name": strategy.chunking_strategy.strategy_name,

@@ -37,7 +37,7 @@ def serialize_f32(vector: list[float]) -> bytes:
 SHOW_LOADING_BAR = True
 
 
-class RetrievalStrategy(BaseModel):
+class BaselineRetrievalStrategy(BaseModel):
     chunking_strategy: ChunkingStrategy
     embedding_model: AIEmbeddingModel
     embedding_top_k: int
@@ -56,14 +56,14 @@ class EmbeddingInfo(BaseModel):
 
 
 class BaselineRetrievalMethod(RetrievalMethod):
-    retrieval_strategy: RetrievalStrategy
+    retrieval_strategy: BaselineRetrievalStrategy
     documents: dict[str, Document]
     # This list maps sqlite rowid (implicit index) to metadata
     embedding_infos: List[EmbeddingInfo] | None
     sqlite_db: sqlite3.Connection | None
     sqlite_db_file_path: str | Path | None
 
-    def __init__(self, retrieval_strategy: RetrievalStrategy, cache_dir: str | Path | None = None):
+    def __init__(self, retrieval_strategy: BaselineRetrievalStrategy, cache_dir: str | Path | None = None):
         self.retrieval_strategy = retrieval_strategy
         self.documents = {}
         self.embedding_infos = None

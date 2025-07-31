@@ -1,6 +1,6 @@
 from typing import Union
 from sac_rag.data_models import RetrievalMethod
-from sac_rag.methods.baseline import BaselineRetrievalMethod, RetrievalStrategy as BaselineConfig
+from sac_rag.methods.baseline import BaselineRetrievalMethod, BaselineRetrievalStrategy as BaselineConfig
 from sac_rag.methods.hybrid import HybridRetrievalMethod, HybridStrategy
 
 # A type hint for any of our strategy configuration models
@@ -26,7 +26,7 @@ def create_retriever(strategy_config: AnyRetrievalConfig) -> RetrievalMethod:
 
     elif isinstance(strategy_config, HybridStrategy):
         print("Factory: Creating HybridRetrievalMethod...")
-        return HybridRetrievalMethod(strategy=strategy_config)
+        return HybridRetrievalMethod(retrieval_strategy=strategy_config)
 
     else:
         # This case should ideally not be hit if the config loader works correctly,
