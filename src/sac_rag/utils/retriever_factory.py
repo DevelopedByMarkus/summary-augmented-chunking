@@ -1,10 +1,10 @@
 from typing import Union
 from sac_rag.data_models import RetrievalMethod
-from sac_rag.methods.baseline import BaselineRetrievalMethod, BaselineRetrievalStrategy as BaselineConfig
+from sac_rag.methods.baseline import BaselineRetrievalMethod, BaselineRetrievalStrategy
 from sac_rag.methods.hybrid import HybridRetrievalMethod, HybridStrategy
 
 # A type hint for any of our strategy configuration models
-AnyRetrievalConfig = Union[BaselineConfig, HybridStrategy]
+AnyRetrievalConfig = Union[BaselineRetrievalStrategy, HybridStrategy]
 
 
 def create_retriever(strategy_config: AnyRetrievalConfig) -> RetrievalMethod:
@@ -20,7 +20,7 @@ def create_retriever(strategy_config: AnyRetrievalConfig) -> RetrievalMethod:
     Returns:
         An initialized instance of a class that inherits from RetrievalMethod.
     """
-    if isinstance(strategy_config, BaselineConfig):
+    if isinstance(strategy_config, BaselineRetrievalStrategy):
         print("Factory: Creating BaselineRetrievalMethod...")
         return BaselineRetrievalMethod(retrieval_strategy=strategy_config)
 

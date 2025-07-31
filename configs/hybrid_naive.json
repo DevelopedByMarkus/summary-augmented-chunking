@@ -16,6 +16,8 @@
   "embedding_top_k": 128,
   "bm25_top_k": 128,
   "fusion_top_k": 64,
+  "fusion_weight": 1.0,
   "rerank_model": null,
-  "rerank_top_k": 4
+  "rerank_top_k": 4,
+  "token_limit": null
 }

@@ -220,7 +220,7 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
             final_tests.append(test)
             final_weights.append(weights[i])
 
-    if len(final_tests) != len(all_tests):
+    if len(final_tests) != len(all_tests):  # TODO: check this! It should never happen!
         print(f"Filtered out {len(all_tests) - len(final_tests)} tests due to missing corpus files.")
 
     if not final_tests:
@@ -243,35 +243,28 @@ def create_summary_row(idx: int, config_path: str, strategy: Any, result: Benchm
         "config_file": config_path,
         "recall": result.avg_recall,
         "precision": result.avg_precision,
-        "f1_score": result.avg_f1_score
+        "f1_score": result.avg_f1_score,
+        "chunk_strategy_name": strategy.chunking_strategy.strategy_name,
+        "chunk_size": strategy.chunking_strategy.chunk_size,
+        "embedding_model_company": strategy.embedding_model.company,
+        "embedding_model_name": strategy.embedding_model.model,
+        "embedding_top_k": strategy.embedding_top_k,
+        "rerank_model_company": strategy.rerank_model.company if strategy.rerank_model else None,
+        "rerank_model_name": strategy.rerank_model.model if strategy.rerank_model else None,
+        "rerank_top_k": strategy.rerank_top_k,
     }
 
     # Deconstruct the strategy object to get detailed columns
     if isinstance(strategy, BaselineRetrievalStrategy):
         row.update({
             "method": "baseline",
-            "chunk_strategy_name": strategy.chunking_strategy.strategy_name,
-            "chunk_size": strategy.chunking_strategy.chunk_size,
-            "embedding_model_company": strategy.embedding_model.company,
-            "embedding_model_name": strategy.embedding_model.model,
-            "embedding_top_k": strategy.embedding_top_k,
-            "rerank_model_company": strategy.rerank_model.company if strategy.rerank_model else None,
-            "rerank_model_name": strategy.rerank_model.model if strategy.rerank_model else None,
-            "rerank_top_k": strategy.rerank_top_k,
         })
     elif isinstance(strategy, HybridStrategy):
         row.update({
             "method": "hypa",
-            "chunk_strategy_name": strategy.chunk_strategy_name,
-            "chunk_size": strategy.chunk_size,
-            "embedding_model_company": strategy.embedding_model.company,
-            "embedding_model_name": strategy.embedding_model.model,
-            "embedding_top_k": strategy.embedding_top_k,
             "bm25_top_k": strategy.bm25_top_k,
             "fusion_top_k": strategy.fusion_top_k,
-            "rerank_model_company": strategy.rerank_model.company if strategy.rerank_model else None,
-            "rerank_model_name": strategy.rerank_model.model if strategy.rerank_model else None,
-            "rerank_top_k": strategy.rerank_top_k,
+            "fusion_weight": strategy.fusion_weight,
         })
     else:
         print("WARNING: Unsupported strategy type. Skipping.")

@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import List, Dict, Literal, Optional
+from typing import List, Dict
 import logging
 
 # LlamaIndex imports
@@ -28,7 +28,6 @@ from sac_rag.utils.ai import (
     AIEmbeddingModel,
     AIEmbeddingType,
     AIRerankModel,
-    AIModel,
     ai_embedding,
     ai_rerank,
 )
@@ -45,9 +44,9 @@ class HybridStrategy(BaseModel):
     embedding_top_k: int
     bm25_top_k: int
     fusion_top_k: int
-    fusion_weight: float = 0.5
-    rerank_model: AIRerankModel | None = None
-    rerank_top_k: int | None = None
+    fusion_weight: float
+    rerank_model: AIRerankModel | None
+    rerank_top_k: int | None
     token_limit: int | None  # TODO: Not used yet.
 
 
@@ -184,6 +183,7 @@ class HybridRetrievalMethod(RetrievalMethod):
 
     async def sync_all_documents(self) -> None:
         """Process documents, create nodes with cached embeddings, build indices."""
+
         print(f"Hybrid: Calculating chunks using strategy '{self.retrieval_strategy.chunking_strategy.strategy_name}'...")
 
         # Prepare kwargs for get_chunks
@@ -200,8 +200,7 @@ class HybridRetrievalMethod(RetrievalMethod):
 
         all_chunks_tasks: List[asyncio.Task[List[Chunk]]] = []
         for document in self.documents.values():
-            # get_chunks is now async
-            task = asyncio.create_task(get_chunks(document=document, **chunking_params))  # type: ignore
+            task = asyncio.create_task(get_chunks(document=document, **chunking_params))
             all_chunks_tasks.append(task)
 
         results_of_chunking_tasks = await asyncio.gather(*all_chunks_tasks)
@@ -240,7 +239,7 @@ class HybridRetrievalMethod(RetrievalMethod):
 
         # 2. Create LlamaIndex TextNodes with pre-computed embeddings
         print("Hybrid: Creating LlamaIndex TextNodes with pre-computed embeddings...")
-        self.nodes = []  # Initialize as list of TextNode
+        self.nodes = []  # TODO: This is very RAM consuming! Rework it!
         for i, (chunk, embedding) in enumerate(zip(all_chunks, embeddings)):
             # Create a unique node ID based on file and span of original content
             node_id = f"{chunk.file_path}_{chunk.span[0]}_{chunk.span[1]}"
@@ -278,7 +277,7 @@ class HybridRetrievalMethod(RetrievalMethod):
         # 5. Build BM25 Retriever using the TextNodes
         print("Hybrid: Building BM25 retriever...")
         self.bm25_retriever = BM25Retriever.from_defaults(
-            nodes=self.nodes,  # type: ignore
+            nodes=self.nodes,
             similarity_top_k=self.retrieval_strategy.bm25_top_k
         )
         print("Hybrid: BM25 retriever built.")
@@ -295,10 +294,10 @@ class HybridRetrievalMethod(RetrievalMethod):
         vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
         bm25_retriever = self.bm25_retriever
 
-        retrievers: List[BaseRetriever] = [vector_retriever, bm25_retriever]  # type: ignore
+        retrievers: List[BaseRetriever] = [vector_retriever, bm25_retriever]
 
         # 2. Run retrievals asynchronously
-        tasks = [retriever.aretrieve(query) for retriever in retrievers]  # type: ignore
+        tasks = [retriever.aretrieve(query) for retriever in retrievers]
         task_results: List[List[NodeWithScore]] = await asyncio.gather(*tasks)
 
         results_dict = {

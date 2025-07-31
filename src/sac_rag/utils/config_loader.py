@@ -37,5 +37,4 @@ def load_strategy_from_file(filepath: str) -> AnyRetrievalStrategy:
         # Pydantic does the magic of parsing and validating the nested dictionary
         return model.model_validate(data)
     except ValidationError as e:
-        print(f"Error: Configuration file {filepath} failed validation.")
         raise e
