@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import List, Dict, Literal, Optional  # Added Optional
+from typing import List, Dict, Literal, Optional
 import logging
 
 # LlamaIndex imports
@@ -28,30 +28,19 @@ from sac_rag.utils.ai import (
     AIEmbeddingModel,
     AIEmbeddingType,
     AIRerankModel,
-    AIModel,  # Added AIModel for summary
+    AIModel,
     ai_embedding,
     ai_rerank,
 )
-from sac_rag.utils.chunking import Chunk, get_chunks  # get_chunks is now async
+from sac_rag.utils.chunking import Chunk, get_chunks, ChunkingStrategy
 
 logger = logging.getLogger(__name__)
 
 
 # --- Configuration Model ---
-class HybridStrategy(BaseModel):  # TODO: Refactor pydantic model so that it has the same structure as baseline!
+class HybridStrategy(BaseModel):
     """Configuration specific to the Hybrid retrieval method."""
-    strategy_type: str = "hybrid"
-    # Updated Literal to include new summary strategies
-    chunk_strategy_name: Literal["naive", "rcts", "summary_naive", "summary_rcts"] = "rcts"
-    chunk_size: int  # For summary strategies, this is the TOTAL target length
-    chunk_overlap_ratio: float = 0.0  # Used if base strategy is rcts
-
-    # New fields for summarization - these will be None for non-summary strategies
-    summary_model: Optional[AIModel] = None
-    summary_prompt_template: Optional[str] = None
-    prompt_target_char_length: int = 150
-    summary_truncation_length: int = 170
-
+    chunking_strategy: ChunkingStrategy
     embedding_model: AIEmbeddingModel
     embedding_top_k: int
     bm25_top_k: int
@@ -59,6 +48,7 @@ class HybridStrategy(BaseModel):  # TODO: Refactor pydantic model so that it has
     fusion_weight: float = 0.5
     rerank_model: AIRerankModel | None = None
     rerank_top_k: int | None = None
+    token_limit: int | None  # TODO: Not used yet.
 
 
 # --- Helper Function for Fusion ---
@@ -81,7 +71,7 @@ def fuse_results_weighted_rrf(
     """
     if weights is None:
         weights = {"bm25": 0.0, "vector": 1.0}  # Default weights for bm25 and vector retrievers
-    print(f"fusion weight: {weights}")
+    print(f"fusion weight: {weights}")  # TODO: Check if this really works!!
     # Ensure that all retrievers in the results have a corresponding weight
     if not all(key in weights for key in results_dict.keys()):
         raise ValueError(
@@ -131,17 +121,17 @@ def fuse_results_weighted_rrf(
 
 # --- Hybrid Retrieval Method Implementation ---
 class HybridRetrievalMethod(RetrievalMethod):
-    strategy: HybridStrategy
+    retrieval_strategy: HybridStrategy
     documents: Dict[str, BenchmarkDocument]
-    nodes: List[TextNode] | None  # Explicitly TextNode for Hybrid
+    nodes: List[TextNode] | None
     vector_index: VectorStoreIndex | None
     bm25_retriever: BM25Retriever | None
     _llama_embed_model: BaseEmbedding | None = None
 
-    def __init__(self, strategy: HybridStrategy):
-        self.strategy = strategy
+    def __init__(self, retrieval_strategy: HybridStrategy):
+        self.retrieval_strategy = retrieval_strategy
         self.documents = {}
-        self.nodes = None  # Initialize as None
+        self.nodes = None
         self.vector_index = None
         self.bm25_retriever = None
         self._llama_embed_model = None
@@ -149,7 +139,7 @@ class HybridRetrievalMethod(RetrievalMethod):
     def _get_llama_embed_model(self) -> BaseEmbedding:
         """Maps the strategy's AIEmbeddingModel to a LlamaIndex BaseEmbedding instance."""
         if self._llama_embed_model:
-            current_model_config = self.strategy.embedding_model
+            current_model_config = self.retrieval_strategy.embedding_model
             if isinstance(self._llama_embed_model,
                           OpenAIEmbedding) and current_model_config.company == 'openai' and self._llama_embed_model.model_name == current_model_config.model:  # Changed .model to .model_name
                 return self._llama_embed_model
@@ -164,8 +154,8 @@ class HybridRetrievalMethod(RetrievalMethod):
                 return self._llama_embed_model
 
         print(
-            f"Hybrid: Instantiating LlamaIndex embedding model for: {self.strategy.embedding_model.company} / {self.strategy.embedding_model.model}")
-        model_config = self.strategy.embedding_model
+            f"Hybrid: Instantiating LlamaIndex embedding model for: {self.retrieval_strategy.embedding_model.company} / {self.retrieval_strategy.embedding_model.model}")
+        model_config = self.retrieval_strategy.embedding_model
         embed_model: BaseEmbedding
 
         if model_config.company == 'openai':
@@ -194,19 +184,19 @@ class HybridRetrievalMethod(RetrievalMethod):
 
     async def sync_all_documents(self) -> None:
         """Process documents, create nodes with cached embeddings, build indices."""
-        print(f"Hybrid: Calculating chunks using strategy '{self.strategy.chunk_strategy_name}'...")
+        print(f"Hybrid: Calculating chunks using strategy '{self.retrieval_strategy.chunking_strategy.strategy_name}'...")
 
         # Prepare kwargs for get_chunks
         chunking_params = {
-            "strategy_name": self.strategy.chunk_strategy_name,
-            "chunk_size": self.strategy.chunk_size,  # Total size for summary strats
-            "chunk_overlap_ratio": self.strategy.chunk_overlap_ratio,
+            "strategy_name": self.retrieval_strategy.chunking_strategy.strategy_name,
+            "chunk_size": self.retrieval_strategy.chunking_strategy.chunk_size,  # Total size for summary strats
+            "chunk_overlap_ratio": self.retrieval_strategy.chunking_strategy.chunk_overlap_ratio,
         }
-        if self.strategy.chunk_strategy_name.startswith("summary_"):
-            chunking_params["summarization_model"] = self.strategy.summary_model
-            chunking_params["summary_prompt_template"] = self.strategy.summary_prompt_template
-            chunking_params["prompt_target_char_length"] = self.strategy.prompt_target_char_length
-            chunking_params["summary_truncation_length"] = self.strategy.summary_truncation_length
+        if self.retrieval_strategy.chunking_strategy.strategy_name.startswith("summary_"):
+            chunking_params["summarization_model"] = self.retrieval_strategy.chunking_strategy.summary_model
+            chunking_params["summary_prompt_template"] = self.retrieval_strategy.chunking_strategy.summary_prompt_template
+            chunking_params["prompt_target_char_length"] = self.retrieval_strategy.chunking_strategy.prompt_target_char_length
+            chunking_params["summary_truncation_length"] = self.retrieval_strategy.chunking_strategy.summary_truncation_length
 
         all_chunks_tasks: List[asyncio.Task[List[Chunk]]] = []
         for document in self.documents.values():
@@ -228,7 +218,7 @@ class HybridRetrievalMethod(RetrievalMethod):
 
         # 1. Fetch embeddings using ai_embedding (utilizes cache)
         chunk_contents = [chunk.content for chunk in all_chunks]  # These contents include summaries
-        model_config = self.strategy.embedding_model
+        model_config = self.retrieval_strategy.embedding_model
 
         pbar = tqdm(total=len(chunk_contents), desc="Hybrid Embeddings", ncols=100)
 
@@ -289,7 +279,7 @@ class HybridRetrievalMethod(RetrievalMethod):
         print("Hybrid: Building BM25 retriever...")
         self.bm25_retriever = BM25Retriever.from_defaults(
             nodes=self.nodes,  # type: ignore
-            similarity_top_k=self.strategy.bm25_top_k
+            similarity_top_k=self.retrieval_strategy.bm25_top_k
         )
         print("Hybrid: BM25 retriever built.")
 
@@ -302,7 +292,7 @@ class HybridRetrievalMethod(RetrievalMethod):
             raise ValueError("Indices not synchronized. Call sync_all_documents first.")
 
         # 1. Get Retrievers
-        vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.strategy.embedding_top_k)
+        vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
         bm25_retriever = self.bm25_retriever
 
         retrievers: List[BaseRetriever] = [vector_retriever, bm25_retriever]  # type: ignore
@@ -316,24 +306,24 @@ class HybridRetrievalMethod(RetrievalMethod):
             'bm25': task_results[1] if len(task_results) > 1 else [],
         }
 
-        bm25_weight = 1 - self.strategy.fusion_weight
-        fusion_weight = {"bm25": bm25_weight, "vector": self.strategy.fusion_weight}
+        bm25_weight = 1 - self.retrieval_strategy.fusion_weight
+        fusion_weight = {"bm25": bm25_weight, "vector": self.retrieval_strategy.fusion_weight}
 
         # 3. Fuse results
-        fused_nodes = fuse_results_weighted_rrf(results_dict, similarity_top_k=self.strategy.fusion_top_k, weights=fusion_weight)
+        fused_nodes = fuse_results_weighted_rrf(results_dict, similarity_top_k=self.retrieval_strategy.fusion_top_k, weights=fusion_weight)
 
         # 4. Optional Reranking Step
         final_nodes = fused_nodes
-        if self.strategy.rerank_model and self.strategy.rerank_top_k is not None and fused_nodes:
+        if self.retrieval_strategy.rerank_model and self.retrieval_strategy.rerank_top_k is not None and fused_nodes:
             logger.debug(
-                f"Hybrid: Reranking {len(fused_nodes)} fused nodes with {self.strategy.rerank_model.company}/{self.strategy.rerank_model.model} (top_k={self.strategy.rerank_top_k})...")
+                f"Hybrid: Reranking {len(fused_nodes)} fused nodes with {self.retrieval_strategy.rerank_model.company}/{self.retrieval_strategy.rerank_model.model} (top_k={self.retrieval_strategy.rerank_top_k})...")
             texts_to_rerank = [node.get_content() for node in fused_nodes]  # Content includes summary
 
             reranked_indices = await ai_rerank(
-                model=self.strategy.rerank_model,
+                model=self.retrieval_strategy.rerank_model,
                 query=query,
                 texts=texts_to_rerank,
-                top_k=self.strategy.rerank_top_k
+                top_k=self.retrieval_strategy.rerank_top_k
             )
             final_nodes = [fused_nodes[i] for i in reranked_indices]
             # Update scores to reflect reranking order
@@ -368,7 +358,7 @@ class HybridRetrievalMethod(RetrievalMethod):
                         f"Hybrid WARNING: Node {node.node_id} missing metadata: {', '.join(missing_meta)}. Skipping.")
             else:
                 logger.warning(
-                    f"Hybrid WARNING: Retrieved node {node.node_id} is not a TextNode but {type(node)}. Skipping.")  # type: ignore
+                    f"Hybrid WARNING: Retrieved node {node.node_id} is not a TextNode but {type(node)}. Skipping.")
 
         return QueryResponse(retrieved_snippets=retrieved_snippets)
 
