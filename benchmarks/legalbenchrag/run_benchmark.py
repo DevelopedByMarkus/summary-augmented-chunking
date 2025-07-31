@@ -216,11 +216,17 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
     # Filter tests to only those with loaded documents
     final_tests, final_weights = [], []
     for i, test in enumerate(all_tests):
-        if all(s.file_path in loaded_paths for s in test.snippets):
+        all_loaded = True
+        for s in test.snippets:
+            sanitized_path = sanitize_filename(s.file_path, f"{test.tags[0]}/")
+            if sanitized_path not in loaded_paths:
+                all_loaded = False
+                break
+        if all_loaded:
             final_tests.append(test)
             final_weights.append(weights[i])
 
-    if len(final_tests) != len(all_tests):  # TODO: check this! It should never happen!
+    if len(final_tests) != len(all_tests):  # should never happen
         print(f"Filtered out {len(all_tests) - len(final_tests)} tests due to missing corpus files.")
 
     if not final_tests:
