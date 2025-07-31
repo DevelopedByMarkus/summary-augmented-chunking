@@ -70,7 +70,7 @@ def fuse_results_weighted_rrf(
     """
     if weights is None:
         weights = {"bm25": 0.0, "vector": 1.0}  # Default weights for bm25 and vector retrievers
-    print(f"fusion weight: {weights}")  # TODO: Check if this really works!!
+    print(f"fusion weight: {weights}")
     # Ensure that all retrievers in the results have a corresponding weight
     if not all(key in weights for key in results_dict.keys()):
         raise ValueError(
