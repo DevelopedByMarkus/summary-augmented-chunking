@@ -128,7 +128,7 @@ class BenchmarkResult(BaseModel):
 
 # --- Core Benchmark Execution Logic ---
 
-async def execute_single_run(
+async def run_strategy(
         qa_gt_list: list[QAGroundTruth],
         corpus: list[Document],
         retriever: RetrievalMethod,
@@ -322,7 +322,7 @@ async def main(args):
             retriever = create_retriever(strategy)
 
             # Execute the benchmark
-            result = await execute_single_run(tests, corpus, retriever, weights=weights)
+            result = await run_strategy(tests, corpus, retriever, weights=weights)
 
             # Save detailed JSON result for this run
             config_basename, _ = os.path.splitext(os.path.basename(config_path))

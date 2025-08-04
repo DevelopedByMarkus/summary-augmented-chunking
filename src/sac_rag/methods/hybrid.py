@@ -115,7 +115,7 @@ def fuse_results_weighted_rrf(
         node_with_score.score = fused_scores[node_id]
         reranked_nodes.append(node_with_score)
 
-    return reranked_nodes[:similarity_top_k]
+    return reranked_nodes[:similarity_top_k]  #MR
 
 
 # --- Hybrid Retrieval Method Implementation ---

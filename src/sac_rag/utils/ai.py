@@ -796,7 +796,7 @@ async def ai_rerank(
     if top_k is not None:
         top_k = min(top_k, len(final_indices))
         if top_k >= 0:  # Allow top_k=0 to return empty list
-            final_indices = final_indices[:top_k]
+            final_indices = final_indices[:top_k]  #MR
         # If top_k is negative, implies no truncation from the full list.
     return final_indices
 
@@ -906,6 +906,8 @@ async def generate_document_summary(
     if len(summary_text) > truncate_char_length:
         summary_text = summary_text[:truncate_char_length].strip()
         logger.info(f"Summary for {document_file_path} hard-truncated to {truncate_char_length} chars.")
+        # TODO: Because of temperature=0.0 this will happen every run (not efficient for cache!).
+        #  Maybe do it with retries and temp = 1.0
         cache_summary = False  # Don't cache if we had to truncate
 
     if not summary_text.strip() and document_content.strip():
