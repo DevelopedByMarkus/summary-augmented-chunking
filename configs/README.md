@@ -23,7 +23,8 @@ The parameters should be self explaining. However, currently the two methods `ba
 - hf_rerank_bge_large = AIRerankModel(company="huggingface", model="BAAI/bge-reranker-large")
 
 ### Define final top_k values to test
-- final_top_k_values: list[int] = [1, 2, 4, 8, 16, 32, 64]
+- final_top_k_values: list[int] = [1, 2, 4, 8, 16, 32, 64] - always given by rerank_top_k even if no reranker used
+- fusion-top-k must be >= max(rerank_top_k_values)
 
 ### Calculate max K needed for consistent input to reranker caching
 - max_final_k = max(final_top_k_values) if final_top_k_values else 64  # Default if list is empty

@@ -42,7 +42,7 @@ class BaselineRetrievalStrategy(BaseModel):
     embedding_model: AIEmbeddingModel
     embedding_top_k: int
     rerank_model: AIRerankModel | None
-    rerank_top_k: int
+    rerank_top_k: List[int]
     token_limit: int | None
 
 
@@ -296,11 +296,12 @@ class BaselineRetrievalMethod(RetrievalMethod):
         # 2. Rerank if specified
         final_metadatas = retrieved_metadatas
         if self.retrieval_strategy.rerank_model is not None and initial_texts_for_reranking:  # Check if list not empty
+            # Pass top_k=None to get all reranked indices. The truncation will happen in the benchmark script.
             reranked_indices_map = await ai_rerank(
                 self.retrieval_strategy.rerank_model,
                 query,
-                texts=initial_texts_for_reranking,  # Texts now include summaries if applicable
-                top_k=self.retrieval_strategy.rerank_top_k,
+                texts=initial_texts_for_reranking,
+                top_k=None,
             )
             final_metadatas = [
                 retrieved_metadatas[i] for i in reranked_indices_map

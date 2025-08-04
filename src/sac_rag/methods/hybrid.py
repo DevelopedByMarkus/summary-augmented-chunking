@@ -46,7 +46,7 @@ class HybridStrategy(BaseModel):
     fusion_top_k: int
     fusion_weight: float
     rerank_model: AIRerankModel | None
-    rerank_top_k: int | None
+    rerank_top_k: List[int]
     token_limit: int | None  # TODO: Not used yet.
 
 
@@ -70,7 +70,7 @@ def fuse_results_weighted_rrf(
     """
     if weights is None:
         weights = {"bm25": 0.0, "vector": 1.0}  # Default weights for bm25 and vector retrievers
-    print(f"fusion weight: {weights}")
+    logger.debug(f"fusion weight: {weights}")
     # Ensure that all retrievers in the results have a corresponding weight
     if not all(key in weights for key in results_dict.keys()):
         raise ValueError(
@@ -313,7 +313,7 @@ class HybridRetrievalMethod(RetrievalMethod):
 
         # 4. Optional Reranking Step
         final_nodes = fused_nodes
-        if self.retrieval_strategy.rerank_model and self.retrieval_strategy.rerank_top_k is not None and fused_nodes:
+        if self.retrieval_strategy.rerank_model is not None and fused_nodes:
             logger.debug(
                 f"Hybrid: Reranking {len(fused_nodes)} fused nodes with {self.retrieval_strategy.rerank_model.company}/{self.retrieval_strategy.rerank_model.model} (top_k={self.retrieval_strategy.rerank_top_k})...")
             texts_to_rerank = [node.get_content() for node in fused_nodes]  # Content includes summary
@@ -322,7 +322,7 @@ class HybridRetrievalMethod(RetrievalMethod):
                 model=self.retrieval_strategy.rerank_model,
                 query=query,
                 texts=texts_to_rerank,
-                top_k=self.retrieval_strategy.rerank_top_k
+                top_k=None
             )
             final_nodes = [fused_nodes[i] for i in reranked_indices]
             # Update scores to reflect reranking order

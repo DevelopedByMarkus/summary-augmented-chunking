@@ -132,27 +132,52 @@ async def run_strategy(
         qa_gt_list: list[QAGroundTruth],
         corpus: list[Document],
         retriever: RetrievalMethod,
+        strat: Any,
         weights: list[float] | None = None,
-) -> BenchmarkResult:
-    """Executes a benchmark run for a given retriever and test set."""
+) -> Dict[int, BenchmarkResult]:
+    """Executes a benchmark run for a given retriever and test set for multiple top-k-values."""
     for document in tqdm(corpus, desc="Ingesting documents"):
         await retriever.ingest_document(document)
     await retriever.sync_all_documents()
 
-    async def run_query(qa_gt: QAGroundTruth) -> QAResult:
+    final_k_values = strat.rerank_top_k
+    if not final_k_values:
+        # Pydantic checks that rerank_top_k is a List[int] so this should not happen
+        raise ValueError("No 'rerank_top_k' list found in the strategy config.")
+
+    # This will store the full, un-truncated results for each query
+    full_query_results: List[Tuple[QAGroundTruth, List[RetrievedSnippet]]] = []
+
+    async def run_query(qa_gt: QAGroundTruth) -> Tuple[QAGroundTruth, List[RetrievedSnippet]]:
         query_response = await retriever.query(qa_gt.query)
-        return QAResult(qa_gt=qa_gt, retrieved_snippets=query_response.retrieved_snippets)
+        return qa_gt, query_response.retrieved_snippets
 
     tasks = [run_query(qa_gt) for qa_gt in qa_gt_list]
-    results = await asyncio.gather(
-        *[t for t in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Running queries")])
+    for future in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Running queries"):
+        result = await future
+        full_query_results.append(result)
+    # full_query_results = await asyncio.gather(
+    #     *[t for t in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Running queries")])
 
     await retriever.cleanup()
 
-    return BenchmarkResult(
-        qa_result_list=results,
-        weights=weights if weights is not None else [1.0] * len(results),
-    )
+    # Post-process results for each top-k
+    results_by_k: Dict[int, BenchmarkResult] = {}
+    for k in final_k_values:
+        qa_results_for_k: list[QAResult] = []
+        for qa_gt, full_retrieved_snippets in full_query_results:
+            # Slice the results for the current top-k
+            sliced_snippets = full_retrieved_snippets[:k]
+            qa_results_for_k.append(
+                QAResult(qa_gt=qa_gt, retrieved_snippets=sliced_snippets)
+            )
+
+        results_by_k[k] = BenchmarkResult(
+            qa_result_list=qa_results_for_k,
+            weights=weights if weights is not None else [1.0] * len(qa_results_for_k),
+        )
+
+    return results_by_k
 
 
 # --- Data Setup Logic ---
@@ -322,21 +347,25 @@ async def main(args):
             retriever = create_retriever(strategy)
 
             # Execute the benchmark
-            result = await run_strategy(tests, corpus, retriever, weights=weights)
+            results_by_k = await run_strategy(tests, corpus, retriever, strat=strategy, weights=weights)
 
-            # Save detailed JSON result for this run
-            config_basename, _ = os.path.splitext(os.path.basename(config_path))
-            result_filename = os.path.join(results_dir, f"{i}_{config_basename}.json")
-            with open(result_filename, "w", encoding='utf-8') as f:
-                f.write(result.model_dump_json(indent=2))
+            # Loop through the results for each k and save/summarize
+            for k, result in results_by_k.items():
+                print(f" --- Post-Processing results for k={k} ---")
 
-            # Prepare the DETAILED summary row
-            row = create_summary_row(i, config_path, strategy, result)
-            summary_rows.append(row)
+                # Save detailed JSON result for this run and top-k
+                config_basename, _ = os.path.splitext(os.path.basename(config_path))
+                result_filename = os.path.join(results_dir, f"{i}_{config_basename}_k{k}.json")
+                with open(result_filename, "w", encoding='utf-8') as f:
+                    f.write(result.model_dump_json(indent=2))
 
-            print(f"  Overall Avg Recall:    {100 * result.avg_recall: .2f}%")
-            print(f"  Overall Avg Precision: {100 * result.avg_precision: .2f}%")
-            print(f"  Overall Avg F1-Score:  {100 * result.avg_f1_score: .2f}%")
+                # Prepare the DETAILED summary row
+                row = create_summary_row(i, config_path, strategy, result)
+                summary_rows.append(row)
+
+                print(f"  Overall Avg Recall:    {100 * result.avg_recall: .2f}%")
+                print(f"  Overall Avg Precision: {100 * result.avg_precision: .2f}%")
+                print(f"  Overall Avg F1-Score:  {100 * result.avg_f1_score: .2f}%")
 
         except Exception as e:
             import traceback
@@ -362,7 +391,7 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the legalbench-rag benchmark.")
-    parser.add_argument(  # TODO: Implement that results are stored for all top-k values in one run (no additional overhead)
+    parser.add_argument(
         "--retrieval-configs", "-rc",
         nargs='+', required=True,
         help="One or more paths to retrieval strategy JSON config files."
