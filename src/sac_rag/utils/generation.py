@@ -289,7 +289,6 @@ def create_generator(args) -> BaseGenerator:
     if "gpt-" in model_name_lower or "openai/" in model_name_lower:
         # Set API keys from credentials
         os.environ["OPENAI_API_KEY"] = credentials.ai.openai_api_key.get_secret_value()
-        # TODO: Refactor credentials in a project credentials dir
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OpenAI API key must be provided via OPENAI_API_KEY environment variable for GPT models.")

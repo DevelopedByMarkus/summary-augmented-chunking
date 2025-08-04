@@ -362,7 +362,7 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the legalbench-rag benchmark.")
-    parser.add_argument(
+    parser.add_argument(  # TODO: Implement that results are stored for all top-k values in one run (no additional overhead)
         "--retrieval-configs", "-rc",
         nargs='+', required=True,
         help="One or more paths to retrieval strategy JSON config files."

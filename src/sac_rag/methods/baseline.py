@@ -51,8 +51,8 @@ class EmbeddingInfo(BaseModel):
     document_id: str  # file_path from Chunk
     span: tuple[int, int]  # Span of the original content part in the original document
     # TODO: Remove processed_content later. Right now it serves to write the summary+chunk in the json files.
-    #  This is storage heavy!
-    processed_content: str  # The full text (summary + original, or just original) that was embedded
+    #  This is memory heavy!
+    processed_content: str  # The full text that was embedded: (summary +) original
 
 
 class BaselineRetrievalMethod(RetrievalMethod):
@@ -291,22 +291,7 @@ class BaselineRetrievalMethod(RetrievalMethod):
                 document_summary_map[doc_id] = ""  # Fallback
 
         # Construct texts for reranker
-        # TODO: Remove commented out code if
-        # for meta in retrieved_metadatas:
-        #     original_content_text = self.get_embedding_info_text(meta)  # Original content via span
-
-        #     if chunk_strat_config.strategy_name.startswith("summary_"):
-        #         summary_text = document_summary_map.get(meta.document_id, "")  # Use fetched summary
-        #         if summary_text:  # Only prepend if summary is non-empty
-        #             text_for_reranker = f"[document summary] {summary_text}\n[content] {original_content_text}"
-        #             initial_texts_for_reranking.append(text_for_reranker)
-        #         else:
-        #             # If summary is empty (e.g. LLM failed and fallback was also empty, or doc was problematic)
-        #             initial_texts_for_reranking.append(original_content_text)
-        #     else:
-        #         initial_texts_for_reranking.append(original_content_text)
         initial_texts_for_reranking = [meta.processed_content for meta in retrieved_metadatas]
-        # --- End of preparing texts for reranking ---
 
         # 2. Rerank if specified
         final_metadatas = retrieved_metadatas

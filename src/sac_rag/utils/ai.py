@@ -537,7 +537,7 @@ async def ai_embedding(
             continue
         cache_key = get_embeddings_cache_key(model, text, embedding_type)
         cached_embedding = cache.get(cache_key)
-        if cached_embedding is not None:
+        if cached_embedding is not None:  # TODO: Count how many embeddings were extracted from the cache
             text_embeddings_map[i] = cached_embedding
             callback()
         else:
@@ -842,7 +842,7 @@ async def generate_document_summary(
         document_file_path, doc_content_hash, summarization_model, prompt_template_hash
     )
 
-    cached_summary = cache.get(cache_key)
+    cached_summary = cache.get(cache_key)  # TODO: Print how many summaries were used from cache
     if cached_summary is not None:
         logger.debug(f"Cache hit for summary: {document_file_path}")
         return cast(str, cached_summary)
