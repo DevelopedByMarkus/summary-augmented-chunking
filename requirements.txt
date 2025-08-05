@@ -131,7 +131,7 @@ pandas-stubs==2.2.2.240807
     # via -r requirements.in
 parameterized==0.9.0
     # via cohere
-pydantic==2.8.2
+pydantic
     # via
     #   -r requirements.in
     #   anthropic
@@ -237,14 +237,14 @@ llama-index-embeddings-huggingface
 llama-index-embeddings-cohere
 llama-index-embeddings-openai
 llama-index-embeddings-voyageai
-
+llama-index-vector-stores-chroma
+chromadb
 
 legalbenchrag~=0.1
 scikit-learn~=1.6.1
 nltk~=3.9.1
 datasets~=3.6.0
 torch~=2.6.0
-typing_extensions~=4.13.2
 transformers
 bitsandbytes
 accelerate

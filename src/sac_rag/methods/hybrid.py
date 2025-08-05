@@ -1,14 +1,17 @@
 import asyncio
 import os
+import hashlib
 from collections import defaultdict
 from typing import List, Dict
 import logging
 
 # LlamaIndex imports
-from llama_index.core import VectorStoreIndex, Settings
+from llama_index.core import VectorStoreIndex, Settings, StorageContext
 from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.embeddings import BaseEmbedding
+import chromadb
+from llama_index.vector_stores.chroma import ChromaVectorStore
 
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -33,6 +36,7 @@ from sac_rag.utils.ai import (
 )
 from sac_rag.utils.chunking import Chunk, get_chunks, ChunkingStrategy
 from sac_rag.utils.stats_tracker import stats_tracker
+from sac_rag.utils.abbreviations import ABBREVIATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -123,18 +127,73 @@ def fuse_results_weighted_rrf(
 class HybridRetrievalMethod(RetrievalMethod):
     retrieval_strategy: HybridStrategy
     documents: Dict[str, BenchmarkDocument]
-    nodes: List[TextNode] | None
-    vector_index: VectorStoreIndex | None
     bm25_retriever: BM25Retriever | None
     _llama_embed_model: BaseEmbedding | None = None
+    vector_store: ChromaVectorStore
+    storage_context: StorageContext
+    vector_index: VectorStoreIndex | None
 
     def __init__(self, retrieval_strategy: HybridStrategy):
         self.retrieval_strategy = retrieval_strategy
         self.documents = {}
-        self.nodes = None
-        self.vector_index = None
         self.bm25_retriever = None
         self._llama_embed_model = None
+        self.vector_index = None
+
+        # Create a persistent client
+        db = chromadb.PersistentClient(path="./data/cache/hybrid_chroma_db")
+
+        # Get or create a collection (like a table in a database)
+        # We can name it based on key strategy parameters to avoid conflicts
+        collection_name = self._get_unique_collection_name(retrieval_strategy)
+
+        print(f"Hybrid: Using ChromaDB collection: {collection_name}")
+        chroma_collection = db.get_or_create_collection(collection_name)
+
+        # Assign the vector store to the instance
+        self.vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+
+    def _get_unique_collection_name(self, strategy: HybridStrategy) -> str:
+        """
+        Creates a unique, short, and valid collection name from the strategy config
+        by using predefined abbreviations.
+        """
+        # Use .get(key, key) as a fallback to just use the full name if an abbreviation is missing.
+
+        # 1. Embedding Model Part
+        embed_model = strategy.embedding_model
+        embed_abbr = ABBREVIATIONS["embedding"].get(embed_model.model, embed_model.model)
+        embed_part = f"e_{embed_abbr}"
+
+        # 2. Chunking Strategy Part
+        cs = strategy.chunking_strategy
+        chunk_abbr = ABBREVIATIONS["chunking"].get(cs.strategy_name, cs.strategy_name)
+        chunk_part = f"c_{chunk_abbr}_{cs.chunk_size}_{str(cs.chunk_overlap_ratio).replace('.', 'p')}"
+
+        # 3. Summarization Part (if applicable)
+        summary_part = ""
+        if cs.strategy_name.startswith("summary_") and cs.summary_model and cs.summary_prompt_template:
+            # Hash the long prompt template to get a short, fixed-length ID
+            prompt_hash = hashlib.sha256(cs.summary_prompt_template.encode()).hexdigest()[:8]
+
+            s_model = cs.summary_model
+            s_model_abbr = ABBREVIATIONS["embedding"].get(s_model.model, s_model.model)  # Reuse embedding dict
+            summary_model_part = f"s_{s_model_abbr}"
+            summary_params_part = f"{cs.prompt_target_char_length}_{cs.summary_truncation_length}_{prompt_hash}"
+            summary_part = f"_{summary_model_part}_{summary_params_part}"
+
+        # 4. Combine and Sanitize
+        # Combine all parts into a single string
+        full_name = f"{embed_part}_{chunk_part}_{summary_part}"
+        # Sanitize for ChromaDB rules: replace invalid chars
+        sanitized_name = full_name.replace("/", "_").replace("-", "_").replace(".", "_")
+
+        # Enforce length limit (3-63 chars)
+        # We trim from the middle if too long, preserving the start and end
+        if len(sanitized_name) > 63:
+            sanitized_name = sanitized_name[:31] + ".." + sanitized_name[-30:]
+
+        return sanitized_name.lower()
 
     def _get_llama_embed_model(self) -> BaseEmbedding:
         """Maps the strategy's AIEmbeddingModel to a LlamaIndex BaseEmbedding instance."""
@@ -243,42 +302,58 @@ class HybridRetrievalMethod(RetrievalMethod):
                 f"Hybrid Critical Error: Mismatch between chunks ({len(all_chunks)}) and embeddings ({len(embeddings)}) count.")
             raise ValueError(f"Hybrid Error: Mismatch between number of chunks and obtained embeddings.")
 
-        # 2. Create LlamaIndex TextNodes with pre-computed embeddings
-        print("Hybrid: Creating LlamaIndex TextNodes with pre-computed embeddings...")
-        self.nodes = []  # TODO: This is very RAM consuming! Rework it!
-        for i, (chunk, embedding) in enumerate(zip(all_chunks, embeddings)):
-            # Create a unique node ID based on file and span of original content
-            node_id = f"{chunk.file_path}_{chunk.span[0]}_{chunk.span[1]}"
-            node = TextNode(
-                id_=node_id,
-                text=chunk.content,  # This text includes the summary
-                metadata={
-                    "file_path": chunk.file_path,
-                    # Store original content span in metadata for consistent snippet creation
-                    "original_span_start": chunk.span[0],
-                    "original_span_end": chunk.span[1],
-                },
-                # Removed start_char_idx and end_char_idx from TextNode direct attributes
-                # as LlamaIndex typically infers these from text or they are less critical
-                # when metadata holds the primary span. If needed by specific LlamaIndex features,
-                # they would refer to spans within chunk.content (summary + original).
-                # For our purposes, original_span in metadata is key.
-                embedding=embedding,
-            )
-            self.nodes.append(node)
-        print(f"Hybrid: Created {len(self.nodes)} TextNodes with embeddings.")
+        # 2. Create LlamaIndex TextNodes and INGEST IN BATCHES
+        print("Hybrid: Ingesting nodes into ChromaDB in batches...")
+
+        batch_size = 512
+        for i in tqdm(range(0, len(all_chunks), batch_size), desc="Ingesting to ChromaDB"):
+            batch_chunks = all_chunks[i:i + batch_size]
+            batch_embeddings = embeddings[i:i + batch_size]
+            batch_nodes = []
+
+            for chunk, embedding in zip(batch_chunks, batch_embeddings):
+                node_id = f"{chunk.file_path}_{chunk.span[0]}_{chunk.span[1]}"
+                node = TextNode(
+                    id_=node_id,
+                    text=chunk.content,
+                    metadata={
+                        "file_path": chunk.file_path,
+                        "original_span_start": chunk.span[0],
+                        "original_span_end": chunk.span[1],
+                    },
+                    embedding=embedding,
+                )
+                batch_nodes.append(node)
+
+            # Add the batch of nodes to the persistent vector store
+            await self.vector_store.async_add(batch_nodes)
+
+        print(f"Hybrid: Finished ingesting {len(all_chunks)} nodes into ChromaDB.")
 
         # 3. Set the global LlamaIndex embedding model (likely needed for query time)
         print("Hybrid: Setting global LlamaIndex embedding model (for query time)...")
         Settings.embed_model = self._get_llama_embed_model()
 
-        # 4. Build In-Memory Vector Index using the TextNodes with pre-computed embeddings
-        print("Hybrid: Building vector index from nodes with pre-computed embeddings...")
-        self.vector_index = VectorStoreIndex(  # Pass self.nodes directly
-            self.nodes,  # type: ignore
-            show_progress=True,  # Changed to True
+        # 4. Build Vector Index from the persistent store
+        print("Hybrid: Building vector index from persistent ChromaDB store...")
+        self.vector_index = VectorStoreIndex.from_vector_store(
+            vector_store=self.vector_store
         )
         print("Hybrid: Vector index built.")
+
+        # 5. Build BM25 Retriever by loading nodes from the index's docstore
+        print("Hybrid: Building BM25 retriever...")
+        # This loads nodes from the ChromaDB docstore
+        nodes_for_bm25 = list(self.vector_index.docstore.docs.values())
+        if not nodes_for_bm25:
+            print("Hybrid: WARNING: No nodes found in the docstore to build BM25 index.")
+            self.bm25_retriever = None
+        else:
+            self.bm25_retriever = BM25Retriever.from_defaults(
+                nodes=nodes_for_bm25,
+                similarity_top_k=self.retrieval_strategy.bm25_top_k
+            )
+        print("Hybrid: BM25 retriever built.")
 
         # 5. Build BM25 Retriever using the TextNodes
         print("Hybrid: Building BM25 retriever...")
@@ -290,9 +365,10 @@ class HybridRetrievalMethod(RetrievalMethod):
 
     async def query(self, query: str) -> QueryResponse:
         """Perform Hybrid retrieval: vector + bm25 + fusion + optional reranking."""
-        if self.vector_index is None or self.bm25_retriever is None or self.nodes is None:
-            if self.nodes is not None and not self.nodes:
-                print("Hybrid Query: No nodes available for querying (list is empty). Returning empty response.")
+        if self.vector_index is None:
+            # Check if the vector store is empty to give a better message
+            if len(self.vector_store.client.get_collection(self.vector_store.collection_name).get()['ids']) == 0:
+                print("Hybrid Query: No nodes available for querying (store is empty). Returning empty response.")
                 return QueryResponse(retrieved_snippets=[])
             raise ValueError("Indices not synchronized. Call sync_all_documents first.")
 
@@ -307,7 +383,7 @@ class HybridRetrievalMethod(RetrievalMethod):
             tasks.append(vector_retriever.aretrieve(query))
             retriever_names.append('vector')
 
-        if fusion_weight['bm25'] > 0.0:
+        if fusion_weight['bm25'] > 0.0 and self.bm25_retriever is not None:
             bm25_retriever = self.bm25_retriever
             tasks.append(bm25_retriever.aretrieve(query))
             retriever_names.append('bm25')
@@ -383,9 +459,7 @@ class HybridRetrievalMethod(RetrievalMethod):
     async def cleanup(self) -> None:
         """Release resources."""
         self.documents = {}
-        self.nodes = None
         self.vector_index = None
         self.bm25_retriever = None
         self._llama_embed_model = None
-        # Settings.embed_model = None # Optional: Reset LlamaIndex global settings
         print("Hybrid: Cleanup complete.")
