@@ -25,6 +25,7 @@ from sac_rag.utils.ai import (
     generate_document_summary
 )
 from sac_rag.utils.chunking import Chunk, get_chunks, ChunkingStrategy
+from sac_rag.utils.stats_tracker import stats_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,7 @@ class BaselineRetrievalMethod(RetrievalMethod):
 
     async def sync_all_documents(self) -> None:
         # 1. Calculate chunks using the shared utility
+        stats_tracker.start_timer('chunking_and_summarization')
         print(f"Baseline: Calculating chunks using strategy '{self.retrieval_strategy.chunking_strategy.strategy_name}'...")  # Updated print
 
         # Prepare kwargs for the now async get_chunks
@@ -120,6 +122,8 @@ class BaselineRetrievalMethod(RetrievalMethod):
         for chunk_list_for_doc in results_of_chunking_tasks:
             all_chunks.extend(chunk_list_for_doc)
 
+        stats_tracker.set('chunks_created', len(all_chunks))
+        stats_tracker.stop_timer('chunking_and_summarization')
         print(f"Baseline: Created {len(all_chunks)} chunks.")
 
         if not all_chunks:
@@ -131,6 +135,7 @@ class BaselineRetrievalMethod(RetrievalMethod):
         self.embedding_infos = []  # Initialize here
 
         # 2. Calculate embeddings using the ai_embedding function
+        stats_tracker.start_timer('embedding_generation')
         progress_bar: tqdm | None = None
         if SHOW_LOADING_BAR:
             progress_bar = tqdm(
@@ -153,6 +158,7 @@ class BaselineRetrievalMethod(RetrievalMethod):
 
         if progress_bar:
             progress_bar.close()
+        stats_tracker.stop_timer('embedding_generation')
 
         # Ensure embeddings match chunks *after* potential errors in ai_embedding
         if len(all_chunks) != len(embeddings):

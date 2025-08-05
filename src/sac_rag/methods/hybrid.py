@@ -32,6 +32,7 @@ from sac_rag.utils.ai import (
     ai_rerank,
 )
 from sac_rag.utils.chunking import Chunk, get_chunks, ChunkingStrategy
+from sac_rag.utils.stats_tracker import stats_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,7 @@ class HybridRetrievalMethod(RetrievalMethod):
     async def sync_all_documents(self) -> None:
         """Process documents, create nodes with cached embeddings, build indices."""
 
+        stats_tracker.start_timer('chunking_and_summarization')
         print(f"Hybrid: Calculating chunks using strategy '{self.retrieval_strategy.chunking_strategy.strategy_name}'...")
 
         # Prepare kwargs for get_chunks
@@ -208,6 +210,8 @@ class HybridRetrievalMethod(RetrievalMethod):
         for chunk_list_for_doc in results_of_chunking_tasks:
             all_chunks.extend(chunk_list_for_doc)
 
+        stats_tracker.set('chunks_created', len(all_chunks))
+        stats_tracker.stop_timer('chunking_and_summarization')
         print(f"Hybrid: Created {len(all_chunks)} chunks.")
 
         if not all_chunks:
@@ -216,6 +220,7 @@ class HybridRetrievalMethod(RetrievalMethod):
             return
 
         # 1. Fetch embeddings using ai_embedding (utilizes cache)
+        stats_tracker.start_timer('embedding_generation')
         chunk_contents = [chunk.content for chunk in all_chunks]  # These contents include summaries
         model_config = self.retrieval_strategy.embedding_model
 
@@ -231,6 +236,7 @@ class HybridRetrievalMethod(RetrievalMethod):
             callback=progress_callback,
         )
         pbar.close()
+        stats_tracker.stop_timer('embedding_generation')
 
         if len(embeddings) != len(all_chunks):
             logger.error(

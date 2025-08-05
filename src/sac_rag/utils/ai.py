@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 import random
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, Literal, cast, Dict, List
 
@@ -27,6 +27,7 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from sac_rag.utils.credentials import credentials
 from sac_rag.utils.utils import sanitize_filename
+from sac_rag.utils.stats_tracker import stats_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -537,12 +538,14 @@ async def ai_embedding(
             continue
         cache_key = get_embeddings_cache_key(model, text, embedding_type)
         cached_embedding = cache.get(cache_key)
-        if cached_embedding is not None:  # TODO: Count how many embeddings were extracted from the cache
+        if cached_embedding is not None:
             text_embeddings_map[i] = cached_embedding
             callback()
+            stats_tracker.increment('embeddings_from_cache')
         else:
             indices_to_fetch_map[len(required_texts_list)] = i
             required_texts_list.append(text)
+            stats_tracker.increment('embeddings_not_from_cache')
 
     if not required_texts_list:
         final_cached = [text_embeddings_map.get(i) for i in range(len(texts))]
@@ -842,12 +845,14 @@ async def generate_document_summary(
         document_file_path, doc_content_hash, summarization_model, prompt_template_hash
     )
 
-    cached_summary = cache.get(cache_key)  # TODO: Print how many summaries were used from cache
+    cached_summary = cache.get(cache_key)
     if cached_summary is not None:
         logger.debug(f"Cache hit for summary: {document_file_path}")
+        stats_tracker.increment('summaries_from_cache')
         return cast(str, cached_summary)
 
     logger.info(f"Cache miss for summary. Generating for: {document_file_path} with {summarization_model.model}")
+    stats_tracker.increment('summaries_not_from_cache')
     cache_summary = True
 
     content_to_summarize = document_content
@@ -855,10 +860,12 @@ async def generate_document_summary(
         # Check token count and truncate if necessary
         num_tokens = ai_num_tokens(summarization_model, document_content)
         if num_tokens > max_tokens_for_summary:
-            logger.warning(  # TODO: Make an INFO out of this when debuged and write info to stat file
+            logger.info(
                 f"Document {document_file_path} is too long ({num_tokens} tokens > {max_tokens_for_summary} max_tokens). "
                 f"Truncating to first and last {max_tokens_for_summary // 2} tokens for summarization."
             )
+            stats_tracker.increment('documents_truncated')
+
             # Use tiktoken to accurately handle token-based slicing
             encoding = tiktoken.encoding_for_model(summarization_model.model)
             tokens = encoding.encode(document_content)
@@ -888,6 +895,7 @@ async def generate_document_summary(
             f"Invalid placeholder in summary_prompt_template: {e} for {document_file_path}. Using basic prompt.")
         final_prompt_content = f"Summarize this to about {prompt_target_char_length} chars: {document_content}"
         cache_summary = False  # Don't cache if template is invalid
+        stats_tracker.increment('summaries_incorrect_fallback')
 
     messages_for_llm = [AIMessage(role="user", content=final_prompt_content)]
 
@@ -896,18 +904,21 @@ async def generate_document_summary(
     try:
         summary_text = await ai_call(
             model=summarization_model, messages=messages_for_llm, max_tokens=llm_max_output_tokens,
-            temperature=0.2, num_ratelimit_retries=num_ratelimit_retries, backoff_algo=backoff_algo
+            temperature=0.0, num_ratelimit_retries=num_ratelimit_retries, backoff_algo=backoff_algo
         )
     except Exception as e:
         logger.warning(f"LLM summarization failed for {document_file_path}: {e}. Fallback.")
         summary_text = document_content[:truncate_char_length].strip()
         cache_summary = False  # Don't cache if summarization failed
+        stats_tracker.increment('summaries_incorrect_fallback')
 
     if len(summary_text) > truncate_char_length:
         logger.info(
             f"Initial summary for {document_file_path} is too long ({len(summary_text)} > {truncate_char_length}). "
             f"Retrying with temperature = 1.0 for a shorter response."
         )
+        found_good_summary = False
+        last_long_summary = summary_text
         MAX_RETRIES = 5
         for i in range(MAX_RETRIES):
             try:
@@ -916,10 +927,12 @@ async def generate_document_summary(
                     temperature=1.0,  # Use high temperature for diversity
                     num_ratelimit_retries=num_ratelimit_retries, backoff_algo=backoff_algo
                 )
+                last_long_summary = retry_summary_text
                 # Check if the new summary meets the length requirement
                 if len(retry_summary_text) <= truncate_char_length:
                     logger.info(f"Successfully generated a shorter summary on retry {i + 1}.")
                     summary_text = retry_summary_text
+                    found_good_summary = True
                     break  # Exit the retry loop
                 else:
                     summary_text = retry_summary_text
@@ -929,20 +942,20 @@ async def generate_document_summary(
                 logger.error(f"An error occurred during summary retry {i + 1}: {e}. Stopping retries.")
                 cache_summary = False  # Do not cache if the retry itself fails
                 break  # Exit the loop on API error
-        # This 'else' block executes only if the 'for' loop completes without a 'break'.
-        # This means all 5 retries failed to produce a summary of the required length.
-        else:
+
+        if not found_good_summary:
             logger.warning(
-                f"All {MAX_RETRIES} retries failed to produce a summary of the desired length. "
-                f"Hard-truncating the last generated summary."
+                f"Could not generate a summary of the desired length. "
+                f"Hard-truncating the last response received."
             )
-            summary_text = summary_text[:truncate_char_length].strip()
-            # We still proceed to cache this truncated version.
+            summary_text = last_long_summary[:truncate_char_length].strip()
+            stats_tracker.increment('summaries_truncated_after_retries')
 
     if not summary_text.strip() and document_content.strip():
         logger.warning(f"Empty summary for {document_file_path}. Fallback.")
         summary_text = document_content[:truncate_char_length].strip()
         cache_summary = False  # Don't cache if summary is empty
+        stats_tracker.increment('summaries_incorrect_fallback')
 
     # If no proper summary was extracted, done write the corrupted summary to cache!
     if cache_summary:

@@ -19,6 +19,7 @@ from sac_rag.utils.retriever_factory import create_retriever
 from sac_rag.methods.baseline import BaselineRetrievalStrategy
 from sac_rag.methods.hybrid import HybridStrategy
 from sac_rag.utils.utils import sanitize_filename
+from sac_rag.utils.stats_tracker import stats_tracker
 
 
 # --- Pydantic Models for this Benchmark's Evaluation Logic ---
@@ -147,6 +148,7 @@ async def run_strategy(
 
     # This will store the full, un-truncated results for each query
     full_query_results: List[Tuple[QAGroundTruth, List[RetrievedSnippet]]] = []
+    stats_tracker.start_timer('query_processing')
 
     async def run_query(qa_gt: QAGroundTruth) -> Tuple[QAGroundTruth, List[RetrievedSnippet]]:
         query_response = await retriever.query(qa_gt.query)
@@ -160,6 +162,8 @@ async def run_strategy(
     #     *[t for t in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Running queries")])
 
     await retriever.cleanup()
+
+    stats_tracker.stop_timer('query_processing')
 
     # Post-process results for each top-k
     results_by_k: Dict[int, BenchmarkResult] = {}
@@ -334,6 +338,7 @@ async def main(args):
     logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logging.getLogger("bm25s").setLevel(logging.WARNING)
 
+    stats_tracker.start_timer('overall_run')
     start_time = datetime.now()
     print(f"Starting Legalbench-RAG benchmark run at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -342,7 +347,11 @@ async def main(args):
     os.environ["VOYAGEAI_API_KEY"] = credentials.ai.voyageai_api_key.get_secret_value()
 
     # 1. Setup and load all data once
+    stats_tracker.start_timer('data_setup')
     corpus, tests, weights = setup_and_load_data(args.max_tests_per_benchmark, args.sort_by_document)
+    stats_tracker.stop_timer('data_setup')
+    stats_tracker.set('documents_processed', len(corpus))
+    stats_tracker.set('queries_processed', len(tests))
 
     # 2. Prepare for results
     run_name = start_time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -389,12 +398,23 @@ async def main(args):
             summary_rows.append(
                 {"config_file": config_path, "recall": "ERROR", "precision": "ERROR", "f1_score": "ERROR"})
 
-    # 4. Save final summary CSV
+    # 4. Save final summary CSV and STATS
     if summary_rows:
         df = pd.DataFrame(summary_rows)
         summary_path = os.path.join(results_dir, "results_summary.csv")
         df.to_csv(summary_path, index=False)
         print(f'\nOverall Benchmark summary saved to: "{summary_path}"')
+
+    stats_tracker.stop_timer('overall_run')
+    stats_report_content = stats_tracker.report()
+    stats_path = os.path.join(results_dir, "stats.txt")
+    try:
+        with open(stats_path, "w", encoding='utf-8') as f:
+            f.write(stats_report_content)
+            print(f'\nOperational stats saved to: "{stats_path}"')
+    except Exception as e:
+        print(f"Error saving stats report: {e}. Skipping...")
+    print("\n" + stats_report_content)  # Also print to console for convenience
 
     print(f"\nBenchmark run '{run_name}' finished.")
 
