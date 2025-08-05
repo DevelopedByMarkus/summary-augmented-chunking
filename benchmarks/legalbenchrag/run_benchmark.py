@@ -271,7 +271,11 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
 
 
 benchmark_name_to_weight: dict[str, float] = {
-    "privacy_qa": 0.25, "contractnli": 0.25, "maud": 0.25, "cuad": 0.25,
+    "privacy_qa": 0.25, "contractnli": 0.25, "maud": 0.25, "cuad": 0.25
+}
+
+benchmark_name_to_weight_test: dict[str, float] = {
+    "lbrag_test": 1.0
 }
 
 
