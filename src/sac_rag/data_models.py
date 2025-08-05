@@ -7,8 +7,6 @@ from typing import Optional
 from pydantic import BaseModel, computed_field, model_validator
 from typing_extensions import Self
 
-from sac_rag.utils.utils import sanitize_filename
-
 
 # max_bridge_gap_len will merge spans that are within max_bridge_gap_len characters of eachother.
 def sort_and_merge_spans(
