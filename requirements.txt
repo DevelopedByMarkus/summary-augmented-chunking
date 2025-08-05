@@ -4,15 +4,15 @@
 #
 #    pip-compile requirements.in
 #
-aiohappyeyeballs==2.3.5
+aiohappyeyeballs
     # via aiohttp
-aiohttp==3.10.2
+aiohttp
     # via
     #   langchain
     #   voyageai
-aiolimiter==1.1.0
+aiolimiter
     # via voyageai
-aiosignal==1.3.1
+aiosignal
     # via aiohttp
 annotated-types==0.7.0
     # via pydantic
@@ -224,7 +224,7 @@ urllib3==2.2.2
     #   types-requests
 voyageai~=0.3.2
     # via -r requirements.in
-yarl==1.9.4
+yarl
     # via aiohttp
 
 dropbox~=12.0.2

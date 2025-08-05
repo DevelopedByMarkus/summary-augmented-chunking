@@ -180,7 +180,7 @@ class HybridRetrievalMethod(RetrievalMethod):
             s_model_abbr = ABBREVIATIONS["embedding"].get(s_model.model, s_model.model)  # Reuse embedding dict
             summary_model_part = f"s_{s_model_abbr}"
             summary_params_part = f"{cs.prompt_target_char_length}_{cs.summary_truncation_length}_{prompt_hash}"
-            summary_part = f"_{summary_model_part}_{summary_params_part}"
+            summary_part = f"{summary_model_part}_{summary_params_part}"
 
         # 4. Combine and Sanitize
         # Combine all parts into a single string
@@ -353,14 +353,6 @@ class HybridRetrievalMethod(RetrievalMethod):
                 nodes=nodes_for_bm25,
                 similarity_top_k=self.retrieval_strategy.bm25_top_k
             )
-        print("Hybrid: BM25 retriever built.")
-
-        # 5. Build BM25 Retriever using the TextNodes
-        print("Hybrid: Building BM25 retriever...")
-        self.bm25_retriever = BM25Retriever.from_defaults(
-            nodes=self.nodes,
-            similarity_top_k=self.retrieval_strategy.bm25_top_k
-        )
         print("Hybrid: BM25 retriever built.")
 
     async def query(self, query: str) -> QueryResponse:
