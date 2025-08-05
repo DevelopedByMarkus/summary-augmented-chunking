@@ -1,5 +1,6 @@
 import asyncio
 import os
+from collections import defaultdict
 from typing import List, Dict
 import logging
 
@@ -7,7 +8,6 @@ import logging
 from llama_index.core import VectorStoreIndex, Settings
 from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
-from llama_index.core.retrievers import BaseRetriever
 from llama_index.core.embeddings import BaseEmbedding
 
 from llama_index.embeddings.openai import OpenAIEmbedding
@@ -32,6 +32,7 @@ from sac_rag.utils.ai import (
     ai_rerank,
 )
 from sac_rag.utils.chunking import Chunk, get_chunks, ChunkingStrategy
+from sac_rag.utils.stats_tracker import stats_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ def fuse_results_weighted_rrf(
         node_with_score.score = fused_scores[node_id]
         reranked_nodes.append(node_with_score)
 
-    return reranked_nodes[:similarity_top_k]  #MR
+    return reranked_nodes[:similarity_top_k]
 
 
 # --- Hybrid Retrieval Method Implementation ---
@@ -184,6 +185,7 @@ class HybridRetrievalMethod(RetrievalMethod):
     async def sync_all_documents(self) -> None:
         """Process documents, create nodes with cached embeddings, build indices."""
 
+        stats_tracker.start_timer('chunking_and_summarization')
         print(f"Hybrid: Calculating chunks using strategy '{self.retrieval_strategy.chunking_strategy.strategy_name}'...")
 
         # Prepare kwargs for get_chunks
@@ -208,6 +210,8 @@ class HybridRetrievalMethod(RetrievalMethod):
         for chunk_list_for_doc in results_of_chunking_tasks:
             all_chunks.extend(chunk_list_for_doc)
 
+        stats_tracker.set('chunks_created', len(all_chunks))
+        stats_tracker.stop_timer('chunking_and_summarization')
         print(f"Hybrid: Created {len(all_chunks)} chunks.")
 
         if not all_chunks:
@@ -216,6 +220,7 @@ class HybridRetrievalMethod(RetrievalMethod):
             return
 
         # 1. Fetch embeddings using ai_embedding (utilizes cache)
+        stats_tracker.start_timer('embedding_generation')
         chunk_contents = [chunk.content for chunk in all_chunks]  # These contents include summaries
         model_config = self.retrieval_strategy.embedding_model
 
@@ -231,6 +236,7 @@ class HybridRetrievalMethod(RetrievalMethod):
             callback=progress_callback,
         )
         pbar.close()
+        stats_tracker.stop_timer('embedding_generation')
 
         if len(embeddings) != len(all_chunks):
             logger.error(
@@ -290,26 +296,39 @@ class HybridRetrievalMethod(RetrievalMethod):
                 return QueryResponse(retrieved_snippets=[])
             raise ValueError("Indices not synchronized. Call sync_all_documents first.")
 
-        # 1. Get Retrievers
-        vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
-        bm25_retriever = self.bm25_retriever
-
-        retrievers: List[BaseRetriever] = [vector_retriever, bm25_retriever]
-
-        # 2. Run retrievals asynchronously
-        tasks = [retriever.aretrieve(query) for retriever in retrievers]
-        task_results: List[List[NodeWithScore]] = await asyncio.gather(*tasks)
-
-        results_dict = {
-            'vector': task_results[0] if len(task_results) > 0 else [],
-            'bm25': task_results[1] if len(task_results) > 1 else [],
-        }
-
         bm25_weight = 1 - self.retrieval_strategy.fusion_weight
         fusion_weight = {"bm25": bm25_weight, "vector": self.retrieval_strategy.fusion_weight}
 
-        # 3. Fuse results
-        fused_nodes = fuse_results_weighted_rrf(results_dict, similarity_top_k=self.retrieval_strategy.fusion_top_k, weights=fusion_weight)
+        tasks = []
+        retriever_names = []
+
+        if fusion_weight['vector'] > 0.0:
+            vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
+            tasks.append(vector_retriever.aretrieve(query))
+            retriever_names.append('vector')
+
+        if fusion_weight['bm25'] > 0.0:
+            bm25_retriever = self.bm25_retriever
+            tasks.append(bm25_retriever.aretrieve(query))
+            retriever_names.append('bm25')
+
+        # 2. Run only the necessary retrievals asynchronously.
+        if tasks:
+            task_results = await asyncio.gather(*tasks)
+        else:  # Handle edge case where both weights are 0
+            task_results = []
+
+        # 3. Safely build the results' dictionary.
+        results_dict = defaultdict(list)
+        for name, result in zip(retriever_names, task_results):
+            results_dict[name] = result
+
+        # 4. Fuse results.
+        fused_nodes = fuse_results_weighted_rrf(
+            results_dict,
+            similarity_top_k=self.retrieval_strategy.fusion_top_k,
+            weights=fusion_weight
+        )
 
         # 4. Optional Reranking Step
         final_nodes = fused_nodes
