@@ -799,7 +799,7 @@ async def ai_rerank(
     if top_k is not None:
         top_k = min(top_k, len(final_indices))
         if top_k >= 0:  # Allow top_k=0 to return empty list
-            final_indices = final_indices[:top_k]  #MR
+            final_indices = final_indices[:top_k]  # TODO: Check if this is optimal
         # If top_k is negative, implies no truncation from the full list.
     return final_indices
 

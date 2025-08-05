@@ -1,5 +1,6 @@
 import asyncio
 import os
+from collections import defaultdict
 from typing import List, Dict
 import logging
 
@@ -116,7 +117,7 @@ def fuse_results_weighted_rrf(
         node_with_score.score = fused_scores[node_id]
         reranked_nodes.append(node_with_score)
 
-    return reranked_nodes[:similarity_top_k]  #MR
+    return reranked_nodes[:similarity_top_k]
 
 
 # --- Hybrid Retrieval Method Implementation ---
@@ -296,26 +297,39 @@ class HybridRetrievalMethod(RetrievalMethod):
                 return QueryResponse(retrieved_snippets=[])
             raise ValueError("Indices not synchronized. Call sync_all_documents first.")
 
-        # 1. Get Retrievers
-        vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
-        bm25_retriever = self.bm25_retriever
-
-        retrievers: List[BaseRetriever] = [vector_retriever, bm25_retriever]
-
-        # 2. Run retrievals asynchronously
-        tasks = [retriever.aretrieve(query) for retriever in retrievers]  # TODO: Ignore BM25or dense retrieval if weight is 0.0
-        task_results: List[List[NodeWithScore]] = await asyncio.gather(*tasks)
-
-        results_dict = {
-            'vector': task_results[0] if len(task_results) > 0 else [],
-            'bm25': task_results[1] if len(task_results) > 1 else [],
-        }
-
         bm25_weight = 1 - self.retrieval_strategy.fusion_weight
         fusion_weight = {"bm25": bm25_weight, "vector": self.retrieval_strategy.fusion_weight}
 
-        # 3. Fuse results
-        fused_nodes = fuse_results_weighted_rrf(results_dict, similarity_top_k=self.retrieval_strategy.fusion_top_k, weights=fusion_weight)
+        tasks = []
+        retriever_names = []
+
+        if fusion_weight['vector'] > 0.0:
+            vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
+            tasks.append(vector_retriever.aretrieve(query))
+            retriever_names.append('vector')
+
+        if fusion_weight['bm25'] > 0.0:
+            bm25_retriever = self.bm25_retriever
+            tasks.append(bm25_retriever.aretrieve(query))
+            retriever_names.append('bm25')
+
+        # 2. Run only the necessary retrievals asynchronously.
+        if tasks:
+            task_results = await asyncio.gather(*tasks)
+        else:  # Handle edge case where both weights are 0
+            task_results = []
+
+        # 3. Safely build the results' dictionary.
+        results_dict = defaultdict(list)
+        for name, result in zip(retriever_names, task_results):
+            results_dict[name] = result
+
+        # 4. Fuse results.
+        fused_nodes = fuse_results_weighted_rrf(
+            results_dict,
+            similarity_top_k=self.retrieval_strategy.fusion_top_k,
+            weights=fusion_weight
+        )
 
         # 4. Optional Reranking Step
         final_nodes = fused_nodes
