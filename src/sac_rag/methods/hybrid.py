@@ -8,7 +8,6 @@ import logging
 from llama_index.core import VectorStoreIndex, Settings
 from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
-from llama_index.core.retrievers import BaseRetriever
 from llama_index.core.embeddings import BaseEmbedding
 
 from llama_index.embeddings.openai import OpenAIEmbedding
