@@ -855,7 +855,7 @@ async def generate_document_summary(
         # Check token count and truncate if necessary
         num_tokens = ai_num_tokens(summarization_model, document_content)
         if num_tokens > max_tokens_for_summary:
-            logger.warning(
+            logger.warning(  # TODO: Make an INFO out of this when debuged and write info to stat file
                 f"Document {document_file_path} is too long ({num_tokens} tokens > {max_tokens_for_summary} max_tokens). "
                 f"Truncating to first and last {max_tokens_for_summary // 2} tokens for summarization."
             )
