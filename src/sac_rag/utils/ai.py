@@ -829,7 +829,7 @@ async def generate_document_summary(
     # Define a safe token limit well within the model's context window
     # gpt-4o-mini has a 128k context window. 90% (=120k) is a safe upper bound for the input.
     CONTEXT_WINDOW_BUFFER = 0.5  # 0.9375  # TODO: Find a good value for this!
-    max_tokens_for_summary = summarization_model.context_window_tokens * CONTEXT_WINDOW_BUFFER
+    max_tokens_for_summary = int(summarization_model.context_window_tokens * CONTEXT_WINDOW_BUFFER)
 
     if summarization_model.company != "openai":
         logger.error(f"Summarization only supports OpenAI. Requested: {summarization_model.company}. Fallback.")
