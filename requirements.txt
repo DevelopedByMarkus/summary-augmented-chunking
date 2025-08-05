@@ -240,7 +240,6 @@ llama-index-embeddings-voyageai
 llama-index-vector-stores-chroma
 chromadb
 
-legalbenchrag~=0.1
 scikit-learn~=1.6.1
 nltk~=3.9.1
 datasets~=3.6.0
