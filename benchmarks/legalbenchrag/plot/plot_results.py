@@ -8,37 +8,7 @@ from matplotlib.lines import Line2D
 import sys
 from collections import defaultdict
 import re
-
-# --- Abbreviation Mappings ---
-ABBREVIATIONS = {
-    "embedding": {
-        "text-embedding-3-large": "oai3L",
-        "BAAI/bge-base-en-v1.5": "bgeB",
-        "BAAI/bge-large-en-v1.5": "bgeL",
-        "thenlper/gte-large": "gteL",
-        "nlpaueb/legal-bert-base-uncased": "LbertB",
-        "nlpaueb/legal-bert-small-uncased": "LbertS",
-    },
-    "reranker": {
-        "rerank-english-v3.0": "coh3",
-        "rerank-2-lite": "voy2l",
-        "cross-encoder/ms-marco-MiniLM-L-6-v2": "miniLM",
-        "BAAI/bge-reranker-base": "bgeB",
-        "BAAI/bge-reranker-large": "bgeL",
-        # Add None mapping for placeholder
-        None: "X"
-    },
-    "chunking": {
-        "rcts": "rcts",
-        "naive": "naive",
-        "summary_rcts": "s-rcts",
-        "summary_naive": "s-naive",
-    },
-    "method": {
-        "baseline": "base",
-        "hybrid": "hybrid",
-    }
-}
+from sac_rag.utils.abbreviations import ABBREVIATIONS
 
 DEFAULT_ABBR = "unk"
 NONE_ABBR = "X"  # Placeholder for when a component (like reranker) is not used
