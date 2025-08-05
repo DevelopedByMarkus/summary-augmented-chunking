@@ -892,8 +892,8 @@ async def generate_document_summary(
     messages_for_llm = [AIMessage(role="user", content=final_prompt_content)]
 
     summary_text: str
+    llm_max_output_tokens = (truncate_char_length // 3) + 50
     try:
-        llm_max_output_tokens = (truncate_char_length // 3) + 50
         summary_text = await ai_call(
             model=summarization_model, messages=messages_for_llm, max_tokens=llm_max_output_tokens,
             temperature=0.2, num_ratelimit_retries=num_ratelimit_retries, backoff_algo=backoff_algo
@@ -904,11 +904,40 @@ async def generate_document_summary(
         cache_summary = False  # Don't cache if summarization failed
 
     if len(summary_text) > truncate_char_length:
-        summary_text = summary_text[:truncate_char_length].strip()
-        logger.info(f"Summary for {document_file_path} hard-truncated to {truncate_char_length} chars.")
-        # TODO: Because of temperature=0.0 this will happen every run (not efficient for cache!).
-        #  Maybe do it with retries and temp = 1.0
-        cache_summary = False  # Don't cache if we had to truncate
+        logger.info(
+            f"Initial summary for {document_file_path} is too long ({len(summary_text)} > {truncate_char_length}). "
+            f"Retrying with temperature = 1.0 for a shorter response."
+        )
+        MAX_RETRIES = 5
+        for i in range(MAX_RETRIES):
+            try:
+                retry_summary_text = await ai_call(
+                    model=summarization_model, messages=messages_for_llm, max_tokens=llm_max_output_tokens,
+                    temperature=1.0,  # Use high temperature for diversity
+                    num_ratelimit_retries=num_ratelimit_retries, backoff_algo=backoff_algo
+                )
+                # Check if the new summary meets the length requirement
+                if len(retry_summary_text) <= truncate_char_length:
+                    logger.info(f"Successfully generated a shorter summary on retry {i + 1}.")
+                    summary_text = retry_summary_text
+                    break  # Exit the retry loop
+                else:
+                    summary_text = retry_summary_text
+                    logger.warning(f"Retry {i + 1} summary still too long ({len(summary_text)} chars).")
+
+            except Exception as e:
+                logger.error(f"An error occurred during summary retry {i + 1}: {e}. Stopping retries.")
+                cache_summary = False  # Do not cache if the retry itself fails
+                break  # Exit the loop on API error
+        # This 'else' block executes only if the 'for' loop completes without a 'break'.
+        # This means all 5 retries failed to produce a summary of the required length.
+        else:
+            logger.warning(
+                f"All {MAX_RETRIES} retries failed to produce a summary of the desired length. "
+                f"Hard-truncating the last generated summary."
+            )
+            summary_text = summary_text[:truncate_char_length].strip()
+            # We still proceed to cache this truncated version.
 
     if not summary_text.strip() and document_content.strip():
         logger.warning(f"Empty summary for {document_file_path}. Fallback.")
@@ -918,6 +947,7 @@ async def generate_document_summary(
     # If no proper summary was extracted, done write the corrupted summary to cache!
     if cache_summary:
         cache.set(cache_key, summary_text)
+
     logger.info(f"Generated/cached summary for: {document_file_path} (len: {len(summary_text)})")
     logger.debug(f"1. Summary:\n{summary_text}\n\n2. Prompt:\n{final_prompt_content}")
 

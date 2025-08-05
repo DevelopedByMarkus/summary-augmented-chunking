@@ -297,7 +297,7 @@ class HybridRetrievalMethod(RetrievalMethod):
         retrievers: List[BaseRetriever] = [vector_retriever, bm25_retriever]
 
         # 2. Run retrievals asynchronously
-        tasks = [retriever.aretrieve(query) for retriever in retrievers]
+        tasks = [retriever.aretrieve(query) for retriever in retrievers]  # TODO: Ignore BM25or dense retrieval if weight is 0.0
         task_results: List[List[NodeWithScore]] = await asyncio.gather(*tasks)
 
         results_dict = {
