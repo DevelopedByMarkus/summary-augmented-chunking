@@ -166,9 +166,6 @@ class BaselineRetrievalMethod(RetrievalMethod):
                 f"Baseline Critical error: Mismatch between chunks ({len(all_chunks)}) and embeddings ({len(embeddings)}) count after ai_embedding.")
             # This indicates a severe issue; perhaps stop or handle gracefully.
             # For now, we'll let it proceed and likely fail at zip if counts differ.
-            # A more robust approach would be to raise an error here.
-            # However, sticking to minimal changes as requested.
-        # assert len(all_chunks) == len(embeddings), "Mismatch between chunks and embeddings count" # Original assert
 
         print(f"Baseline: Start indexing embeddings...")
 

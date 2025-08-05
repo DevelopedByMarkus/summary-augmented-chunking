@@ -158,8 +158,6 @@ async def run_strategy(
     for future in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Running queries"):
         result = await future
         full_query_results.append(result)
-    # full_query_results = await asyncio.gather(
-    #     *[t for t in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Running queries")])
 
     await retriever.cleanup()
 
@@ -190,7 +188,7 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
     """Loads, samples, and prepares all data needed for the benchmark."""
     all_tests, weights, used_doc_paths = [], [], set()
 
-    for dataset_name, weight in benchmark_name_to_weight_test.items():  # TODO: benchmark_name_to_weight
+    for dataset_name, weight in benchmark_name_to_weight.items():  # TODO: benchmark_name_to_weight
         benchmark_file = f"./data/benchmarks/{dataset_name}.json"
         if not os.path.exists(benchmark_file):
             print(f"Warning: Benchmark file not found: {benchmark_file}. Skipping.")
@@ -203,7 +201,7 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
         # Sanitize all snippet file paths in place, immediately after loading.
         # This ensures all subsequent logic uses the canonical, sanitized path.
         for test in tests:
-            ignore_prefix = "maud/"  # TODO: f"{dataset_name}/"
+            ignore_prefix = f"{dataset_name}/"  # "maud/"  # TODO: f"{dataset_name}/"
             for snippet in test.snippets:
                 snippet.orig_file_path = snippet.file_path  # Store the original raw path
 
