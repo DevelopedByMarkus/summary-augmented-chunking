@@ -192,8 +192,20 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
             print(f"Warning: Benchmark file not found: {benchmark_file}. Skipping.")
             continue
 
+        # Load benchmark QA including ground truth snippets
         with open(benchmark_file, encoding='utf-8') as f:
             tests = Benchmark.model_validate_json(f.read()).tests
+
+        # Sanitize all snippet file paths in place, immediately after loading.
+        # This ensures all subsequent logic uses the canonical, sanitized path.
+        for test in tests:
+            ignore_prefix = f"{dataset_name}/"
+            for snippet in test.snippets:
+                snippet.orig_file_path = snippet.file_path  # Store the original raw path
+
+                # Original: "dataset/file/with\\slashes.txt"
+                # Sanitized: "dataset/file_with_slashes.txt"
+                snippet.file_path = sanitize_filename(snippet.file_path, ignore_dirs=ignore_prefix)  # Path on disk
 
         # Sampling logic
         sampled_tests = tests
@@ -208,8 +220,7 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
 
         for t in sampled_tests:
             for s in t.snippets:
-                sanitized_path = sanitize_filename(s.file_path, f"{dataset_name}/")
-                used_doc_paths.add(sanitized_path)
+                used_doc_paths.add(s.file_path)
 
         for t in sampled_tests:
             t.tags = [dataset_name]
@@ -243,8 +254,7 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
     for i, test in enumerate(all_tests):
         all_loaded = True
         for s in test.snippets:
-            sanitized_path = sanitize_filename(s.file_path, f"{test.tags[0]}/")
-            if sanitized_path not in loaded_paths:
+            if s.file_path not in loaded_paths:
                 all_loaded = False
                 break
         if all_loaded:
@@ -360,7 +370,7 @@ async def main(args):
                     f.write(result.model_dump_json(indent=2))
 
                 # Prepare the DETAILED summary row
-                row = create_summary_row(i, config_path, strategy, result)
+                row = create_summary_row(i, config_path, strategy, result)  # TODO: Use k instead of rerank_top_k
                 summary_rows.append(row)
 
                 print(f"  Overall Avg Recall:    {100 * result.avg_recall: .2f}%")
