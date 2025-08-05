@@ -275,7 +275,7 @@ benchmark_name_to_weight: dict[str, float] = {
 }
 
 
-def create_summary_row(idx: int, config_path: str, strategy: Any, result: BenchmarkResult) -> Dict[str, Any]:
+def create_summary_row(idx: int, config_path: str, strategy: Any, result: BenchmarkResult, top_k: int) -> Dict[str, Any]:
     """Creates a detailed dictionary row for the summary CSV."""
 
     # Start with basic info
@@ -292,7 +292,7 @@ def create_summary_row(idx: int, config_path: str, strategy: Any, result: Benchm
         "embedding_top_k": strategy.embedding_top_k,
         "rerank_model_company": strategy.rerank_model.company if strategy.rerank_model else None,
         "rerank_model_name": strategy.rerank_model.model if strategy.rerank_model else None,
-        "rerank_top_k": strategy.rerank_top_k,
+        "rerank_top_k": top_k,
     }
 
     # Deconstruct the strategy object to get detailed columns
@@ -361,7 +361,7 @@ async def main(args):
 
             # Loop through the results for each k and save/summarize
             for k, result in results_by_k.items():
-                print(f" --- Post-Processing results for k={k} ---")
+                print(f"--- Post-Processing results for k={k} ---")
 
                 # Save detailed JSON result for this run and top-k
                 config_basename, _ = os.path.splitext(os.path.basename(config_path))
@@ -370,7 +370,7 @@ async def main(args):
                     f.write(result.model_dump_json(indent=2))
 
                 # Prepare the DETAILED summary row
-                row = create_summary_row(i, config_path, strategy, result)  # TODO: Use k instead of rerank_top_k
+                row = create_summary_row(i, config_path, strategy, result, k)
                 summary_rows.append(row)
 
                 print(f"  Overall Avg Recall:    {100 * result.avg_recall: .2f}%")
