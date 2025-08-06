@@ -6,7 +6,7 @@ from typing import List, Dict
 import logging
 
 # LlamaIndex imports
-from llama_index.core import VectorStoreIndex, StorageContext, Settings
+from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.embeddings import BaseEmbedding
@@ -360,7 +360,7 @@ class HybridRetrievalMethod(RetrievalMethod):
         """Perform Hybrid retrieval: vector + bm25 + fusion + optional reranking."""
         # Explicitly set the embedding model on the global Settings object
         # before querying. The retriever will use this to embed the query string.
-        Settings.embed_model = self._get_llama_embed_model()
+        # Settings.embed_model = self._get_llama_embed_model()
 
         if self.vector_index is None:
             if self.vector_store.client.count() == 0:
@@ -375,7 +375,7 @@ class HybridRetrievalMethod(RetrievalMethod):
         retriever_names = []
 
         if fusion_weight['vector'] > 0.0:
-            vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
+            vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k, embed_model=self._get_llama_embed_model())
             tasks.append(vector_retriever.aretrieve(query))
             retriever_names.append('vector')
 
