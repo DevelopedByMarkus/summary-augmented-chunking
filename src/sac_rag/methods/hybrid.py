@@ -423,18 +423,6 @@ class HybridRetrievalMethod(RetrievalMethod):
                 score = node_with_score.score if node_with_score.score is not None else 0.0
                 current_full_chunk_text = node.get_content()
 
-                # --- DEFINITIVE DEBUGGING BLOCK ---
-                print("-" * 20)
-                print(f"DEBUG: Node ID: {node.node_id}")
-                print(f"DEBUG: file_path is '{file_path}' (type: {type(file_path)})")
-                print(
-                    f"DEBUG: original_span_start is '{original_span_start}' (type: {type(original_span_start)})")
-                print(
-                    f"DEBUG: original_span_end is '{original_span_end}' (type: {type(original_span_end)})")
-                condition_met = bool(
-                    file_path and original_span_start is not None and original_span_end is not None)
-                print(f"DEBUG: --> Condition met: {condition_met} <--")
-
                 if file_path and original_span_start is not None and original_span_end is not None:
                     retrieved_snippets.append(
                         RetrievedSnippet(
