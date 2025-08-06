@@ -375,7 +375,7 @@ class HybridRetrievalMethod(RetrievalMethod):
         retriever_names = []
 
         if fusion_weight['vector'] > 0.0:
-            print(f"Hybrid: Manually embedding query: '{query[:80]}...'")
+            # print(f"Hybrid: Manually embedding query: '{query[:80]}...'")
             query_embedding = await ai_embedding(
                 model=self.retrieval_strategy.embedding_model,
                 texts=[query],
@@ -386,7 +386,7 @@ class HybridRetrievalMethod(RetrievalMethod):
                 query_str=query,
                 embedding=query_embedding[0]
             )
-            # 3. Pass the bundle to the retriever
+            # Pass the bundle to the retriever
             vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
             # We now pass the query_bundle object instead of the raw string
             tasks.append(vector_retriever.aretrieve(query_bundle))
