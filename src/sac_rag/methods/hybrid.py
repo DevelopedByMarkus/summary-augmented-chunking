@@ -355,6 +355,8 @@ class HybridRetrievalMethod(RetrievalMethod):
             )
         print("Hybrid: BM25 retriever built.")
 
+        print(f"Chroma collection count: {self.vector_store.client.get_collection(self.vector_store.collection_name).count()}")
+
     async def query(self, query: str) -> QueryResponse:
         """Perform Hybrid retrieval: vector + bm25 + fusion + optional reranking."""
         if self.vector_index is None:
@@ -372,7 +374,14 @@ class HybridRetrievalMethod(RetrievalMethod):
 
         if fusion_weight['vector'] > 0.0:
             vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
-            tasks.append(vector_retriever.aretrieve(query))
+            ## Debug start
+            temp_vector_results = await vector_retriever.aretrieve(query)
+            print(f"DEBUG: Vector retrieval for query '{query[:30]}...' returned {len(temp_vector_results)} nodes.")
+            if temp_vector_results:
+                print(f"DEBUG: First vector node metadata: {temp_vector_results[0].node.metadata}")
+            tasks.append(asyncio.create_task(asyncio.sleep(0, temp_vector_results)))  # Use a completed future
+            ## Debug end
+            # tasks.append(vector_retriever.aretrieve(query)) # This is the original line
             retriever_names.append('vector')
 
         if fusion_weight['bm25'] > 0.0 and self.bm25_retriever is not None:
