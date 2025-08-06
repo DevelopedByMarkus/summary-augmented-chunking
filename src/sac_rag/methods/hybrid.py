@@ -6,7 +6,7 @@ from typing import List, Dict
 import logging
 
 # LlamaIndex imports
-from llama_index.core import VectorStoreIndex, StorageContext
+from llama_index.core import VectorStoreIndex, StorageContext, Settings
 from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.embeddings import BaseEmbedding
@@ -358,6 +358,10 @@ class HybridRetrievalMethod(RetrievalMethod):
 
     async def query(self, query: str) -> QueryResponse:
         """Perform Hybrid retrieval: vector + bm25 + fusion + optional reranking."""
+        # Explicitly set the embedding model on the global Settings object
+        # before querying. The retriever will use this to embed the query string.
+        Settings.embed_model = self._get_llama_embed_model()
+
         if self.vector_index is None:
             if self.vector_store.client.count() == 0:
                 print("Hybrid Query: No nodes available for querying (store is empty). Returning empty response.")
