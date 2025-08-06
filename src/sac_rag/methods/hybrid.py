@@ -6,7 +6,7 @@ from typing import List, Dict
 import logging
 
 # LlamaIndex imports
-from llama_index.core import VectorStoreIndex, StorageContext
+from llama_index.core import VectorStoreIndex, StorageContext, QueryBundle
 from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.embeddings import BaseEmbedding
@@ -375,8 +375,21 @@ class HybridRetrievalMethod(RetrievalMethod):
         retriever_names = []
 
         if fusion_weight['vector'] > 0.0:
-            vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k, embed_model=self._get_llama_embed_model())
-            tasks.append(vector_retriever.aretrieve(query))
+            print(f"Hybrid: Manually embedding query: '{query[:80]}...'")
+            query_embedding = await ai_embedding(
+                model=self.retrieval_strategy.embedding_model,
+                texts=[query],
+                embedding_type=AIEmbeddingType.QUERY,  # Using QUERY type for best practice
+            )
+            # Create a QueryBundle containing the query and its embedding
+            query_bundle = QueryBundle(
+                query_str=query,
+                embedding=query_embedding[0]
+            )
+            # 3. Pass the bundle to the retriever
+            vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
+            # We now pass the query_bundle object instead of the raw string
+            tasks.append(vector_retriever.aretrieve(query_bundle))
             retriever_names.append('vector')
 
         if fusion_weight['bm25'] > 0.0 and self.bm25_retriever is not None:
