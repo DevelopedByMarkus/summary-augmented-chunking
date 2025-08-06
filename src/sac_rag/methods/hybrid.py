@@ -7,7 +7,7 @@ import logging
 
 # LlamaIndex imports
 from llama_index.core import VectorStoreIndex, Settings, StorageContext
-from llama_index.core.schema import NodeWithScore, TextNode, MetadataMode
+from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.embeddings import BaseEmbedding
 import chromadb
@@ -275,7 +275,6 @@ class HybridRetrievalMethod(RetrievalMethod):
 
         if not all_chunks:
             print("Hybrid: No chunks created, skipping index creation.")
-            self.nodes = []  # Ensure nodes is initialized as empty list
             return
 
         # 1. Fetch embeddings using ai_embedding (utilizes cache)
@@ -341,12 +340,12 @@ class HybridRetrievalMethod(RetrievalMethod):
         )
         print("Hybrid: Vector index built.")
 
-        # 5. Build BM25 Retriever by loading nodes from the index's docstore
+        # 5. Build BM25 Retriever
         print("Hybrid: Building BM25 retriever...")
-        # This loads nodes from the ChromaDB docstore
-        nodes_for_bm25 = list(self.vector_index.docstore.docs.values())
+        all_ids = self.vector_store.client.get()['ids']
+        nodes_for_bm25 = self.vector_store.get(all_ids)
         if not nodes_for_bm25:
-            print("Hybrid: WARNING: No nodes found in the docstore to build BM25 index.")
+            print("Hybrid: WARNING: No nodes found in the vector store to build BM25 index.")
             self.bm25_retriever = None
         else:
             self.bm25_retriever = BM25Retriever.from_defaults(
@@ -355,13 +354,10 @@ class HybridRetrievalMethod(RetrievalMethod):
             )
         print("Hybrid: BM25 retriever built.")
 
-        print(f"DEBUG: Chroma collection count: {self.vector_store.client.count()}")
-
     async def query(self, query: str) -> QueryResponse:
         """Perform Hybrid retrieval: vector + bm25 + fusion + optional reranking."""
         if self.vector_index is None:
-            # Check if the vector store is empty to give a better message
-            if len(self.vector_store.client.get_collection(self.vector_store.collection_name).get()['ids']) == 0:
+            if self.vector_store.client.count() == 0:
                 print("Hybrid Query: No nodes available for querying (store is empty). Returning empty response.")
                 return QueryResponse(retrieved_snippets=[])
             raise ValueError("Indices not synchronized. Call sync_all_documents first.")
@@ -374,22 +370,11 @@ class HybridRetrievalMethod(RetrievalMethod):
 
         if fusion_weight['vector'] > 0.0:
             vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
-            ## Debug start
-            temp_vector_results = await vector_retriever.aretrieve(query)
-            print(f"DEBUG: Vector retrieval for query '{query[:40]}...' returned {len(temp_vector_results)} nodes.")
-            if temp_vector_results:
-                # Check the first node for its content and especially its metadata
-                first_node = temp_vector_results[0].node
-                print(f"DEBUG: First vector node metadata: {first_node.metadata}")
-                print(f"DEBUG: First vector node text: {first_node.get_content(metadata_mode=MetadataMode.NONE)[:100]}...")
-            tasks.append(asyncio.create_task(asyncio.sleep(0.0, temp_vector_results))) # This avoids re-running the query
-            ## Debug end
-            # tasks.append(vector_retriever.aretrieve(query)) # This is the original line
+            tasks.append(vector_retriever.aretrieve(query))
             retriever_names.append('vector')
 
         if fusion_weight['bm25'] > 0.0 and self.bm25_retriever is not None:
-            bm25_retriever = self.bm25_retriever
-            tasks.append(bm25_retriever.aretrieve(query))
+            tasks.append(self.bm25_retriever.aretrieve(query))
             retriever_names.append('bm25')
 
         # 2. Run only the necessary retrievals asynchronously.
@@ -405,9 +390,7 @@ class HybridRetrievalMethod(RetrievalMethod):
 
         # 4. Fuse results.
         fused_nodes = fuse_results_weighted_rrf(
-            results_dict,
-            similarity_top_k=self.retrieval_strategy.fusion_top_k,
-            weights=fusion_weight
+            results_dict, self.retrieval_strategy.fusion_top_k, fusion_weight
         )
 
         # 4. Optional Reranking Step
@@ -439,6 +422,18 @@ class HybridRetrievalMethod(RetrievalMethod):
                 original_span_end = node.metadata.get("original_span_end")
                 score = node_with_score.score if node_with_score.score is not None else 0.0
                 current_full_chunk_text = node.get_content()
+
+                # --- DEFINITIVE DEBUGGING BLOCK ---
+                print("-" * 20)
+                print(f"DEBUG: Node ID: {node.node_id}")
+                print(f"DEBUG: file_path is '{file_path}' (type: {type(file_path)})")
+                print(
+                    f"DEBUG: original_span_start is '{original_span_start}' (type: {type(original_span_start)})")
+                print(
+                    f"DEBUG: original_span_end is '{original_span_end}' (type: {type(original_span_end)})")
+                condition_met = bool(
+                    file_path and original_span_start is not None and original_span_end is not None)
+                print(f"DEBUG: --> Condition met: {condition_met} <--")
 
                 if file_path and original_span_start is not None and original_span_end is not None:
                     retrieved_snippets.append(
