@@ -7,7 +7,7 @@ import logging
 
 # LlamaIndex imports
 from llama_index.core import VectorStoreIndex, Settings, StorageContext
-from llama_index.core.schema import NodeWithScore, TextNode
+from llama_index.core.schema import NodeWithScore, TextNode, MetadataMode
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.embeddings import BaseEmbedding
 import chromadb
@@ -355,7 +355,7 @@ class HybridRetrievalMethod(RetrievalMethod):
             )
         print("Hybrid: BM25 retriever built.")
 
-        print(f"Chroma collection count: {self.vector_store.client.get_collection(self.vector_store.collection_name).count()}")
+        print(f"DEBUG: Chroma collection count: {self.vector_store.client.count()}")
 
     async def query(self, query: str) -> QueryResponse:
         """Perform Hybrid retrieval: vector + bm25 + fusion + optional reranking."""
@@ -376,10 +376,13 @@ class HybridRetrievalMethod(RetrievalMethod):
             vector_retriever = self.vector_index.as_retriever(similarity_top_k=self.retrieval_strategy.embedding_top_k)
             ## Debug start
             temp_vector_results = await vector_retriever.aretrieve(query)
-            print(f"DEBUG: Vector retrieval for query '{query[:30]}...' returned {len(temp_vector_results)} nodes.")
+            print(f"DEBUG: Vector retrieval for query '{query[:40]}...' returned {len(temp_vector_results)} nodes.")
             if temp_vector_results:
-                print(f"DEBUG: First vector node metadata: {temp_vector_results[0].node.metadata}")
-            tasks.append(asyncio.create_task(asyncio.sleep(0, temp_vector_results)))  # Use a completed future
+                # Check the first node for its content and especially its metadata
+                first_node = temp_vector_results[0].node
+                print(f"DEBUG: First vector node metadata: {first_node.metadata}")
+                print(f"DEBUG: First vector node text: {first_node.get_content(metadata_mode=MetadataMode.NONE)[:100]}...")
+            tasks.append(asyncio.create_task(asyncio.sleep(0.0, temp_vector_results))) # This avoids re-running the query
             ## Debug end
             # tasks.append(vector_retriever.aretrieve(query)) # This is the original line
             retriever_names.append('vector')
