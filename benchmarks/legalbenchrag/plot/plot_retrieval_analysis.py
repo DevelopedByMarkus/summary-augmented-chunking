@@ -32,7 +32,7 @@ def parse_filename(filename):
         return None # Needs at least index, some strategy name, top_k
 
     index_str = parts[0]
-    top_k_str = parts[-1]
+    top_k_str = parts[-1][1:]  # Remove leading 'k' from top_k
     strategy_name = '_'.join(parts[1:-1])
 
     if not index_str.isdigit() or not top_k_str.isdigit():
@@ -59,7 +59,7 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir):
     Args:
         strategy_name (str): The identifier for the strategy.
         strategy_data (dict): Data structured as {top_k: analysis_results}.
-        output_dir (str): Directory to save the plot PNG file.
+        output_dir (Path): Directory to save the plot PNG file.
     """
     if not strategy_data:
         print(f"Warning: No data found for strategy '{strategy_name}'. Skipping plot.")
@@ -144,8 +144,8 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir):
 
     # Save plot
     # No need to sanitize filename as user confirmed it's safe
-    # plot_filename = os.path.join(output_dir, f"{strategy_name}.png")
-    plot_filename = os.path.join(output_dir, "pfd_baseline.pdf")
+    plot_filename = os.path.join(output_dir, f"{strategy_name}.png")
+    # plot_filename = os.path.join(output_dir, "pfd_baseline.pdf")
     try:
         plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
         print(f"Plot saved to: {plot_filename}")
@@ -157,13 +157,13 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate plots for retrieval file path analysis based on benchmark results.")
-    parser.add_argument("run_subdir",
+    parser.add_argument("--run_subdir",
                         help="Name of the run subdirectory inside 'benchmark_results'. Example: '2024-01-15_10-30-00'")
     args = parser.parse_args()
 
     # --- Determine Paths ---
     project_root = Path.cwd()
-    results_base_dir = project_root / "results" / "legalbench_rag"
+    results_base_dir = project_root / "results" / "legalbenchrag"
     target_run_dir = results_base_dir / args.run_subdir
     plot_output_dir = project_root / "plots" / "legalbenchrag" / "retrieval_analysis"
 
@@ -172,7 +172,7 @@ def main():
         sys.exit(1)
 
     # --- Scan directory and identify strategies ---
-    strategy_files = defaultdict(list) # {strategy_name: [list of full file paths]}
+    strategy_files = defaultdict(list)  # {strategy_name: [list of full file paths]}
     print(f"Scanning directory: {target_run_dir}")
 
     for filename in os.listdir(target_run_dir):

@@ -205,7 +205,6 @@ def get_strategy_groups_from_user(unique_strategies: pd.DataFrame):
     return valid_groups, strategy_map
 
 
-### --- NEW --- ###
 def detect_and_select_tasks(df: pd.DataFrame) -> list[str]:
     """
     Detects available benchmark tasks from DataFrame columns and prompts the user to select which ones to plot.
@@ -252,7 +251,6 @@ def detect_and_select_tasks(df: pd.DataFrame) -> list[str]:
             print("Error: Invalid input. Please enter a comma-separated list of valid integers.", file=sys.stderr)
 
 
-### --- NEW --- ###
 def ask_for_plotting_mode() -> bool:
     """Asks the user if they want to combine multi-task plots."""
     while True:
@@ -276,7 +274,6 @@ def calculate_f1(precision: pd.Series, recall: pd.Series) -> pd.Series:
     return f1.fillna(0)  # If P+R is 0 or NaN, F1 is 0
 
 
-### --- MODIFIED --- ###
 def prepare_data_for_task(df: pd.DataFrame, selected_groups: dict[str, list[int]],
                           strategy_map: dict[int, dict], task_name: str) -> pd.DataFrame | None:
     """
@@ -514,7 +511,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Plot benchmark results from CSV files with interactive task and strategy selection.")
     parser.add_argument(
-        "results_files", type=str, nargs='+', help="Path(s) to the results.csv file(s)."
+        "--results_files", type=str, nargs='+', help="Path(s) to the results.csv file(s)."
     )
     parser.add_argument(
         "-o", "--output-name", type=str, required=True, help="A unique name for the output directory."
