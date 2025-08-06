@@ -340,12 +340,12 @@ class HybridRetrievalMethod(RetrievalMethod):
         )
         print("Hybrid: Vector index built.")
 
-        # 5. Build BM25 Retriever
+        # 5. Build BM25 Retriever by loading nodes from the index's docstore
         print("Hybrid: Building BM25 retriever...")
-        all_ids = self.vector_store.client.get()['ids']
-        nodes_for_bm25 = self.vector_store.get(all_ids)
+        # This loads nodes from the ChromaDB docstore
+        nodes_for_bm25 = list(self.vector_index.docstore.docs.values())
         if not nodes_for_bm25:
-            print("Hybrid: WARNING: No nodes found in the vector store to build BM25 index.")
+            print("Hybrid: WARNING: No nodes found in the docstore to build BM25 index.")
             self.bm25_retriever = None
         else:
             self.bm25_retriever = BM25Retriever.from_defaults(
