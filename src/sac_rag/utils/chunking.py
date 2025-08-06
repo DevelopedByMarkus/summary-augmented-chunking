@@ -132,7 +132,7 @@ async def get_chunks(  # Made async
         summary_prefix)  # This includes the "[document summary]..." and "[content]" parts
 
     # chunk_size is the TOTAL desired length. Content part should be total minus summary component.
-    content_chunk_target_size = chunk_size - actual_summary_component_len  # TODO: Put summary on top of chunk and not within!
+    content_chunk_target_size = chunk_size - actual_summary_component_len
 
     if is_summary_strategy and content_chunk_target_size <= 0:
         logger.warning(
