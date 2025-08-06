@@ -6,7 +6,7 @@ from typing import List, Dict
 import logging
 
 # LlamaIndex imports
-from llama_index.core import VectorStoreIndex, Settings, StorageContext
+from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.embeddings import BaseEmbedding
@@ -330,13 +330,15 @@ class HybridRetrievalMethod(RetrievalMethod):
         print(f"Hybrid: Finished ingesting {len(all_chunks)} nodes into ChromaDB.")
 
         # 3. Set the global LlamaIndex embedding model (likely needed for query time)
-        print("Hybrid: Setting global LlamaIndex embedding model (for query time)...")
-        Settings.embed_model = self._get_llama_embed_model()
+        print("Hybrid: Getting LlamaIndex embedding model instance...")
+        embed_model = self._get_llama_embed_model()
+        print("Query Embed Model:", str(embed_model))
 
         # 4. Build Vector Index from the persistent store
         print("Hybrid: Building vector index from persistent ChromaDB store...")
         self.vector_index = VectorStoreIndex.from_vector_store(
-            vector_store=self.vector_store
+            vector_store=self.vector_store,
+            embed_model=embed_model
         )
         print("Hybrid: Vector index built.")
 
