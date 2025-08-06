@@ -184,7 +184,10 @@ class HybridRetrievalMethod(RetrievalMethod):
 
         # 4. Combine and Sanitize
         # Combine all parts into a single string
-        full_name = f"{embed_part}_{chunk_part}_{summary_part}"
+        if len(summary_part) > 0:
+            full_name = f"{embed_part}_{chunk_part}_{summary_part}"
+        else:
+            full_name = f"{embed_part}_{chunk_part}"
         # Sanitize for ChromaDB rules: replace invalid chars
         sanitized_name = full_name.replace("/", "_").replace("-", "_").replace(".", "_")
 
