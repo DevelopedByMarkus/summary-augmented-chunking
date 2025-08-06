@@ -19,6 +19,7 @@ from sac_rag.utils.retriever_factory import create_retriever
 from sac_rag.methods.baseline import BaselineRetrievalStrategy
 from sac_rag.methods.hybrid import HybridStrategy
 from sac_rag.utils.utils import sanitize_filename
+from sac_rag.utils.stats_tracker import stats_tracker
 
 
 # --- Pydantic Models for this Benchmark's Evaluation Logic ---
@@ -132,27 +133,53 @@ async def run_strategy(
         qa_gt_list: list[QAGroundTruth],
         corpus: list[Document],
         retriever: RetrievalMethod,
+        strat: Any,
         weights: list[float] | None = None,
-) -> BenchmarkResult:
-    """Executes a benchmark run for a given retriever and test set."""
+) -> Dict[int, BenchmarkResult]:
+    """Executes a benchmark run for a given retriever and test set for multiple top-k-values."""
     for document in tqdm(corpus, desc="Ingesting documents"):
         await retriever.ingest_document(document)
     await retriever.sync_all_documents()
 
-    async def run_query(qa_gt: QAGroundTruth) -> QAResult:
+    final_k_values = strat.rerank_top_k
+    if not final_k_values:
+        # Pydantic checks that rerank_top_k is a List[int] so this should not happen
+        raise ValueError("No 'rerank_top_k' list found in the strategy config.")
+
+    # This will store the full, un-truncated results for each query
+    full_query_results: List[Tuple[QAGroundTruth, List[RetrievedSnippet]]] = []
+    stats_tracker.start_timer('query_processing')
+
+    async def run_query(qa_gt: QAGroundTruth) -> Tuple[QAGroundTruth, List[RetrievedSnippet]]:
         query_response = await retriever.query(qa_gt.query)
-        return QAResult(qa_gt=qa_gt, retrieved_snippets=query_response.retrieved_snippets)
+        return qa_gt, query_response.retrieved_snippets
 
     tasks = [run_query(qa_gt) for qa_gt in qa_gt_list]
-    results = await asyncio.gather(
-        *[t for t in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Running queries")])
+    for future in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Running queries"):
+        result = await future
+        full_query_results.append(result)
 
     await retriever.cleanup()
 
-    return BenchmarkResult(
-        qa_result_list=results,
-        weights=weights if weights is not None else [1.0] * len(results),
-    )
+    stats_tracker.stop_timer('query_processing')
+
+    # Post-process results for each top-k
+    results_by_k: Dict[int, BenchmarkResult] = {}
+    for k in final_k_values:
+        qa_results_for_k: list[QAResult] = []
+        for qa_gt, full_retrieved_snippets in full_query_results:
+            # Slice the results for the current top-k
+            sliced_snippets = full_retrieved_snippets[:k]
+            qa_results_for_k.append(
+                QAResult(qa_gt=qa_gt, retrieved_snippets=sliced_snippets)
+            )
+
+        results_by_k[k] = BenchmarkResult(
+            qa_result_list=qa_results_for_k,
+            weights=weights if weights is not None else [1.0] * len(qa_results_for_k),
+        )
+
+    return results_by_k
 
 
 # --- Data Setup Logic ---
@@ -161,14 +188,26 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
     """Loads, samples, and prepares all data needed for the benchmark."""
     all_tests, weights, used_doc_paths = [], [], set()
 
-    for dataset_name, weight in benchmark_name_to_weight.items():
+    for dataset_name, weight in benchmark_name_to_weight.items():  # TODO: benchmark_name_to_weight
         benchmark_file = f"./data/benchmarks/{dataset_name}.json"
         if not os.path.exists(benchmark_file):
             print(f"Warning: Benchmark file not found: {benchmark_file}. Skipping.")
             continue
 
+        # Load benchmark QA including ground truth snippets
         with open(benchmark_file, encoding='utf-8') as f:
             tests = Benchmark.model_validate_json(f.read()).tests
+
+        # Sanitize all snippet file paths in place, immediately after loading.
+        # This ensures all subsequent logic uses the canonical, sanitized path.
+        for test in tests:
+            ignore_prefix = f"{dataset_name}/"  # "maud/"  # TODO: f"{dataset_name}/"
+            for snippet in test.snippets:
+                snippet.orig_file_path = snippet.file_path  # Store the original raw path
+
+                # Original: "dataset/file/with\\slashes.txt"
+                # Sanitized: "dataset/file_with_slashes.txt"
+                snippet.file_path = sanitize_filename(snippet.file_path, ignore_dirs=ignore_prefix)  # Path on disk
 
         # Sampling logic
         sampled_tests = tests
@@ -183,8 +222,7 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
 
         for t in sampled_tests:
             for s in t.snippets:
-                sanitized_path = sanitize_filename(s.file_path, f"{dataset_name}/")
-                used_doc_paths.add(sanitized_path)
+                used_doc_paths.add(s.file_path)
 
         for t in sampled_tests:
             t.tags = [dataset_name]
@@ -218,8 +256,7 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
     for i, test in enumerate(all_tests):
         all_loaded = True
         for s in test.snippets:
-            sanitized_path = sanitize_filename(s.file_path, f"{test.tags[0]}/")
-            if sanitized_path not in loaded_paths:
+            if s.file_path not in loaded_paths:
                 all_loaded = False
                 break
         if all_loaded:
@@ -236,11 +273,15 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
 
 
 benchmark_name_to_weight: dict[str, float] = {
-    "privacy_qa": 0.25, "contractnli": 0.25, "maud": 0.25, "cuad": 0.25,
+    "privacy_qa": 0.25, "contractnli": 0.25, "maud": 0.25, "cuad": 0.25
+}
+
+benchmark_name_to_weight_test: dict[str, float] = {
+    "lbrag_test": 1.0
 }
 
 
-def create_summary_row(idx: int, config_path: str, strategy: Any, result: BenchmarkResult) -> Dict[str, Any]:
+def create_summary_row(idx: int, config_path: str, strategy: Any, result: BenchmarkResult, top_k: int) -> Dict[str, Any]:
     """Creates a detailed dictionary row for the summary CSV."""
 
     # Start with basic info
@@ -257,7 +298,7 @@ def create_summary_row(idx: int, config_path: str, strategy: Any, result: Benchm
         "embedding_top_k": strategy.embedding_top_k,
         "rerank_model_company": strategy.rerank_model.company if strategy.rerank_model else None,
         "rerank_model_name": strategy.rerank_model.model if strategy.rerank_model else None,
-        "rerank_top_k": strategy.rerank_top_k,
+        "rerank_top_k": top_k,
     }
 
     # Deconstruct the strategy object to get detailed columns
@@ -295,6 +336,7 @@ async def main(args):
     logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logging.getLogger("bm25s").setLevel(logging.WARNING)
 
+    stats_tracker.start_timer('overall_run')
     start_time = datetime.now()
     print(f"Starting Legalbench-RAG benchmark run at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -303,7 +345,11 @@ async def main(args):
     os.environ["VOYAGEAI_API_KEY"] = credentials.ai.voyageai_api_key.get_secret_value()
 
     # 1. Setup and load all data once
+    stats_tracker.start_timer('data_setup')
     corpus, tests, weights = setup_and_load_data(args.max_tests_per_benchmark, args.sort_by_document)
+    stats_tracker.stop_timer('data_setup')
+    stats_tracker.set('documents_processed', len(corpus))
+    stats_tracker.set('queries_processed', len(tests))
 
     # 2. Prepare for results
     run_name = start_time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -322,21 +368,25 @@ async def main(args):
             retriever = create_retriever(strategy)
 
             # Execute the benchmark
-            result = await run_strategy(tests, corpus, retriever, weights=weights)
+            results_by_k = await run_strategy(tests, corpus, retriever, strat=strategy, weights=weights)
 
-            # Save detailed JSON result for this run
-            config_basename, _ = os.path.splitext(os.path.basename(config_path))
-            result_filename = os.path.join(results_dir, f"{i}_{config_basename}.json")
-            with open(result_filename, "w", encoding='utf-8') as f:
-                f.write(result.model_dump_json(indent=2))
+            # Loop through the results for each k and save/summarize
+            for k, result in results_by_k.items():
+                print(f"--- Post-Processing results for k={k} ---")
 
-            # Prepare the DETAILED summary row
-            row = create_summary_row(i, config_path, strategy, result)
-            summary_rows.append(row)
+                # Save detailed JSON result for this run and top-k
+                config_basename, _ = os.path.splitext(os.path.basename(config_path))
+                result_filename = os.path.join(results_dir, f"{i}_{config_basename}_k{k}.json")
+                with open(result_filename, "w", encoding='utf-8') as f:
+                    f.write(result.model_dump_json(indent=2))
 
-            print(f"  Overall Avg Recall:    {100 * result.avg_recall: .2f}%")
-            print(f"  Overall Avg Precision: {100 * result.avg_precision: .2f}%")
-            print(f"  Overall Avg F1-Score:  {100 * result.avg_f1_score: .2f}%")
+                # Prepare the DETAILED summary row
+                row = create_summary_row(i, config_path, strategy, result, k)
+                summary_rows.append(row)
+
+                print(f"  Overall Avg Recall:    {100 * result.avg_recall: .2f}%")
+                print(f"  Overall Avg Precision: {100 * result.avg_precision: .2f}%")
+                print(f"  Overall Avg F1-Score:  {100 * result.avg_f1_score: .2f}%")
 
         except Exception as e:
             import traceback
@@ -346,12 +396,23 @@ async def main(args):
             summary_rows.append(
                 {"config_file": config_path, "recall": "ERROR", "precision": "ERROR", "f1_score": "ERROR"})
 
-    # 4. Save final summary CSV
+    # 4. Save final summary CSV and STATS
     if summary_rows:
         df = pd.DataFrame(summary_rows)
         summary_path = os.path.join(results_dir, "results_summary.csv")
         df.to_csv(summary_path, index=False)
         print(f'\nOverall Benchmark summary saved to: "{summary_path}"')
+
+    stats_tracker.stop_timer('overall_run')
+    stats_report_content = stats_tracker.report()
+    stats_path = os.path.join(results_dir, "stats.txt")
+    try:
+        with open(stats_path, "w", encoding='utf-8') as f:
+            f.write(stats_report_content)
+            print(f'\nOperational stats saved to: "{stats_path}"')
+    except Exception as e:
+        print(f"Error saving stats report: {e}. Skipping...")
+    print("\n" + stats_report_content)  # Also print to console for convenience
 
     print(f"\nBenchmark run '{run_name}' finished.")
 
@@ -362,7 +423,7 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the legalbench-rag benchmark.")
-    parser.add_argument(  # TODO: Implement that results are stored for all top-k values in one run (no additional overhead)
+    parser.add_argument(
         "--retrieval-configs", "-rc",
         nargs='+', required=True,
         help="One or more paths to retrieval strategy JSON config files."

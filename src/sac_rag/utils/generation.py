@@ -141,12 +141,10 @@ class OpenAIGenerator(APIGenerator):
                 response_content = chat_completion.choices[0].message.content
                 return response_content.strip() if response_content else None
             except APIError as e:
-                # TODO: Use index and task name in the error print
-                print(f"OpenAI API Error for prompt '{prompt[:50]}...': {e}")
+                print(f"OpenAI API Error for prompt '{prompt[:250]}...': {e}")
                 return f"ERROR: OpenAI API Error - {e}"
             except Exception as e:
-                # TODO: Use index and task name in the error print
-                print(f"An unexpected error occurred with OpenAI for prompt '{prompt[:50]}...': {e}")
+                print(f"An unexpected error occurred with OpenAI for prompt '{prompt[:250]}...': {e}")
                 return f"ERROR: Unexpected error - {e}"
 
 

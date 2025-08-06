@@ -2,11 +2,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 import os
 from pathlib import Path
+from typing import Optional
 
 from pydantic import BaseModel, computed_field, model_validator
 from typing_extensions import Self
-
-from sac_rag.utils.utils import sanitize_filename
 
 
 # max_bridge_gap_len will merge spans that are within max_bridge_gap_len characters of eachother.
@@ -26,33 +25,27 @@ def sort_and_merge_spans(
 
 
 class Snippet(BaseModel):
-    file_path: str
+    file_path: str  # sanitized filepath as it is on the disk
+    orig_file_path: Optional[str] = None  # Original filepath as it is in the benchmark json
     span: tuple[int, int]
 
     @computed_field  # type: ignore[misc]
     @property
     def answer(self) -> str:
-        # Logic to find the actual file path (original or sanitized) for reading
-        original_full_path = f"{Path.cwd()}/data/corpus/{self.file_path}"
-        sanitized_file_path = sanitize_filename(self.file_path)
-        sanitized_full_path = f"{Path.cwd()}/data/corpus/{sanitized_file_path}"
+        # This function uses `self.file_path`, which is the sanitized path,
+        # to correctly read the file from the corpus on disk.
 
-        if os.path.exists(original_full_path):
-            path_to_read = original_full_path
-        elif os.path.exists(sanitized_full_path):
-            path_to_read = sanitized_full_path
-        else:
-            # This *shouldn't* happen if benchmark.py filtering works correctly,
-            # as only loadable documents should result in runnable tests.
-            # If it does, it signals an inconsistency.
+        full_path_to_read = f"{Path.cwd()}/data/corpus/{self.file_path}"
+
+        if not os.path.exists(full_path_to_read):
+            # This error check remains critical.
             raise FileNotFoundError(
-                f"FATAL: Neither original '{original_full_path}' nor sanitized "
-                f"'{sanitized_full_path}' found for Snippet during serialization. "
+                f"FATAL: The required corpus file was not found at '{full_path_to_read}'. "
                 f"File path '{self.file_path}' was expected to be loadable based on benchmark filtering."
             )
 
-        with open(path_to_read, encoding='utf-8') as f:
-            return f.read()[self.span[0] : self.span[1]]
+        with open(full_path_to_read, encoding='utf-8') as f:
+            return f.read()[self.span[0]: self.span[1]]
 
 
 def validate_snippet_list(snippets: Sequence[Snippet]) -> None:

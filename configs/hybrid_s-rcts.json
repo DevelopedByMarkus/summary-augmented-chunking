@@ -16,11 +16,11 @@
     "company": "openai",
     "model": "text-embedding-3-large"
   },
-  "embedding_top_k": 64,
-  "bm25_top_k": 64,
-  "fusion_top_k": 4,
+  "embedding_top_k": 128,
+  "bm25_top_k": 128,
+  "fusion_top_k": 64,
   "fusion_weight": 1.0,
   "rerank_model": null,
-  "rerank_top_k": 4,
+  "rerank_top_k": [1, 2, 4, 8, 16, 32, 64],
   "token_limit": null
 }
