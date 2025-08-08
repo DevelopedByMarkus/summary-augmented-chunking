@@ -144,7 +144,7 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir):
 
     # Save plot
     # No need to sanitize filename as user confirmed it's safe
-    plot_filename = os.path.join(output_dir, f"{strategy_name}.png")
+    plot_filename = os.path.join(output_dir, f"_{strategy_name}.png")
     # plot_filename = os.path.join(output_dir, "pfd_baseline.pdf")
     try:
         plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
