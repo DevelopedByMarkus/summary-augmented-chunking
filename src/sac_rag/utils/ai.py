@@ -809,9 +809,10 @@ def get_document_summary_cache_key(
         document_file_path: str,
         document_content_hash: str,
         summarization_model: AIModel,
-        summary_prompt_template_hash: str
+        summary_prompt_template_hash: str,
+        prompt_target_char_length: int
 ) -> str:
-    return f"summary_v2|||{document_file_path}|||{document_content_hash}|||{summarization_model.company}|||{summarization_model.model}|||{summary_prompt_template_hash}"
+    return f"summary_v2|||{document_file_path}|||{document_content_hash}|||{summarization_model.company}|||{summarization_model.model}|||{summary_prompt_template_hash}|||{prompt_target_char_length}"
 
 
 async def generate_document_summary(
@@ -830,8 +831,8 @@ async def generate_document_summary(
         to include the beginning and end, which are often the most important parts.
     """
     # Define a safe token limit well within the model's context window
-    # gpt-4o-mini has a 128k context window. 90% (=120k) is a safe upper bound for the input.
-    CONTEXT_WINDOW_BUFFER = 0.5  # 0.9375  # TODO: Find a good value for this!
+    # gpt-4o-mini has a 128k context window. 50% (=64k) is a safe upper bound for the input.
+    CONTEXT_WINDOW_BUFFER = 0.5
     max_tokens_for_summary = int(summarization_model.context_window_tokens * CONTEXT_WINDOW_BUFFER)
 
     if summarization_model.company != "openai":
@@ -842,7 +843,7 @@ async def generate_document_summary(
     prompt_template_hash = hashlib.md5(summary_prompt_template.encode('utf-8', 'replace')).hexdigest()
 
     cache_key = get_document_summary_cache_key(
-        document_file_path, doc_content_hash, summarization_model, prompt_template_hash
+        document_file_path, doc_content_hash, summarization_model, prompt_template_hash, prompt_target_char_length
     )
 
     cached_summary = cache.get(cache_key)
