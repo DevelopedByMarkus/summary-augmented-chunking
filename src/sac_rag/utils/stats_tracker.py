@@ -54,7 +54,7 @@ class StatsTracker:
 
             "\n--- Summarization Quality ---",
             f"Summaries Truncated (Post-Retry): {self.counters['summaries_truncated_after_retries']}",
-            f"    with average length before truncation: {self.counters['summary_length_before_truncation']/self.counters['summaries_truncated_after_retries']}",
+            f"    with average length before truncation: {self.counters['summary_length_before_truncation']/(self.counters['summaries_truncated_after_retries']+0.001)}",
             f"Summaries Using Fallback:    {self.counters['summaries_incorrect_fallback']}",
             f"Documents Truncated (Too Long):   {self.counters['documents_truncated']}",
 
