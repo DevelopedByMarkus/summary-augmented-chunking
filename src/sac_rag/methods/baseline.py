@@ -103,12 +103,10 @@ class BaselineRetrievalMethod(RetrievalMethod):
         # Add summarization specific parameters if it's a summary strategy
         if self.retrieval_strategy.chunking_strategy.strategy_name.startswith("summary_"):
             chunking_params["summarization_model"] = self.retrieval_strategy.chunking_strategy.summary_model
-            chunking_params[
-                "summary_prompt_template"] = self.retrieval_strategy.chunking_strategy.summary_prompt_template
-            chunking_params[
-                "prompt_target_char_length"] = self.retrieval_strategy.chunking_strategy.prompt_target_char_length
-            chunking_params[
-                "summary_truncation_length"] = self.retrieval_strategy.chunking_strategy.summary_truncation_length
+            chunking_params["summary_prompt_template"] = self.retrieval_strategy.chunking_strategy.summary_prompt_template
+            chunking_params["prompt_target_char_length"] = self.retrieval_strategy.chunking_strategy.prompt_target_char_length
+            chunking_params["summary_truncation_length"] = self.retrieval_strategy.chunking_strategy.summary_truncation_length
+            chunking_params["use_cache"] = self.retrieval_strategy.chunking_strategy.use_cache
 
         all_chunks_tasks: List[asyncio.Task[List[Chunk]]] = []
         for document in self.documents.values():

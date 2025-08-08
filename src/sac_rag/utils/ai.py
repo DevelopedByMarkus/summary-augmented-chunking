@@ -822,6 +822,7 @@ async def generate_document_summary(
         summary_prompt_template: str,
         prompt_target_char_length: int,
         truncate_char_length: int,
+        use_cache: bool,
         summaries_output_dir_base: str | Path,
         num_ratelimit_retries: int = 5,
         backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 60) + random.uniform(0, 1)
@@ -847,12 +848,16 @@ async def generate_document_summary(
     )
 
     cached_summary = cache.get(cache_key)
-    if cached_summary is not None:
+    if use_cache and cached_summary is not None:
         logger.debug(f"Cache hit for summary: {document_file_path}")
         stats_tracker.increment('summaries_from_cache')
         return cast(str, cached_summary)
 
-    logger.info(f"Cache miss for summary. Generating for: {document_file_path} with {summarization_model.model}")
+    if cached_summary is None:
+        logger.info(f"Cache miss for summary. Generating for: {document_file_path} with {summarization_model.model}")
+    elif not use_cache and cached_summary is not None:
+        logger.info(f"Overwrite existing summary. Generating for: {document_file_path}")
+
     stats_tracker.increment('summaries_not_from_cache')
     cache_summary = True
 

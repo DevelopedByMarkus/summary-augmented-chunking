@@ -21,6 +21,7 @@ class ChunkingStrategy(BaseModel):
     summary_prompt_template: Optional[str] = None
     prompt_target_char_length: int = 150  # Default target for LLM prompt
     summary_truncation_length: int = 170  # Default hard truncation limit
+    use_cache: bool | None = True  # Whether to use cached summaries if available, 'False' will overwrite the existing cache
 
 
 class Chunk(BaseModel):
@@ -103,6 +104,7 @@ async def get_chunks(  # Made async
         summary_prompt_template = cast(Optional[str], kwargs.get("summary_prompt_template"))
         prompt_target_char_length = cast(int, kwargs.get("prompt_target_char_length", 150))
         summary_truncation_length = cast(int, kwargs.get("summary_truncation_length", 170))
+        use_cache = cast(bool, kwargs.get("use_cache", True))
         summaries_base_dir = Path.cwd() / "data" / "summaries"
 
         if not summarization_model or not summary_prompt_template:
@@ -119,6 +121,7 @@ async def get_chunks(  # Made async
                 summary_prompt_template=summary_prompt_template,
                 prompt_target_char_length=prompt_target_char_length,
                 truncate_char_length=summary_truncation_length,
+                use_cache=use_cache,
                 summaries_output_dir_base=summaries_base_dir
             )
 

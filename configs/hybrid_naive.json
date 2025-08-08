@@ -7,7 +7,8 @@
     "summary_model": null,
     "summary_prompt_template": null,
     "prompt_target_char_length": 200,
-    "summary_truncation_length": 220
+    "summary_truncation_length": 220,
+    "use_cache": true
   },
   "embedding_model": {
     "company": "openai",
