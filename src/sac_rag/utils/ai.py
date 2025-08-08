@@ -930,12 +930,12 @@ async def generate_document_summary(
         MAX_RETRIES = 5
         for i in range(MAX_RETRIES):
             try:
-                # Build chat history so that model can improve on its old summary
-                # messages_for_llm = [
-                #     AIMessage(role="user", content=final_prompt_content),
-                #     AIMessage(role="assistant", content=last_long_summary),
-                #     AIMessage(role="user", content=retry_summary_prompt.format(target_char_length=prompt_target_char_length)),
-                # ]
+                # Build chat history so that model can improve on its previous summary
+                messages_for_llm = [
+                    AIMessage(role="user", content=final_prompt_content),
+                    AIMessage(role="assistant", content=last_long_summary),
+                    AIMessage(role="user", content=retry_summary_prompt.format(target_char_length=prompt_target_char_length)),
+                ]
                 retry_summary_text = await ai_call(
                     model=summarization_model, messages=messages_for_llm, max_tokens=llm_max_output_tokens,
                     temperature=1.0,  # Use high temperature for diversity
