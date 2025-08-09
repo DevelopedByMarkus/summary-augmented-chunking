@@ -848,11 +848,11 @@ async def generate_document_summary(
     cache_key = get_document_summary_cache_key(
         document_file_path, doc_content_hash, summarization_model, prompt_template_hash, prompt_target_char_length
     )
-    logger.debug("Summary cache key: " + cache_key)
+    logger.info("Summary cache key: " + cache_key)
 
     cached_summary = cache.get(cache_key)
     if use_cache and cached_summary is not None:
-        logger.debug(f"Cache hit for summary: {document_file_path}")
+        logger.info(f"Cache hit for summary: {document_file_path}")
         stats_tracker.increment('summaries_from_cache')
         return cast(str, cached_summary)
 
