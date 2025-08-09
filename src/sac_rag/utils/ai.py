@@ -851,7 +851,7 @@ async def generate_document_summary(
     logger.info("Summary cache key: " + cache_key)
 
     cached_summary = cache.get(cache_key)
-    logger.info("cached_summary: " + cached_summary)
+    logger.info("cached_summary: " + str(cached_summary))
     if use_cache and cached_summary is not None:
         logger.info(f"Cache hit for summary: {document_file_path}")
         stats_tracker.increment('summaries_from_cache')
