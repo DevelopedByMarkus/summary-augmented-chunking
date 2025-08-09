@@ -333,7 +333,7 @@ def create_summary_row(idx: int, config_path: str, strategy: Any, result: Benchm
 # --- Main Orchestrator ---
 
 async def main(args):
-    logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')  # TODO: revert to logging.WARNING
     logging.getLogger("bm25s").setLevel(logging.WARNING)
 
     stats_tracker.start_timer('overall_run')
