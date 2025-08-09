@@ -976,8 +976,10 @@ async def generate_document_summary(
     # If no proper summary was extracted, done write the corrupted summary to cache!
     if cache_summary:
         cache.set(cache_key, summary_text)
+        logger.info(f"Generated AND cached summary for: {document_file_path} (len: {len(summary_text)}) with cache key: {cache_key}.")
+    else:
+        logger.info(f"Generated BUT NOT CACHED summary for: {document_file_path} (len: {len(summary_text)})")
 
-    logger.info(f"Generated/cached summary for: {document_file_path} (len: {len(summary_text)})")
     logger.debug(f"1. Summary:\n{summary_text}\n\n2. Prompt:\n{final_prompt_content[:3000]}")
 
     try:
