@@ -848,6 +848,7 @@ async def generate_document_summary(
     cache_key = get_document_summary_cache_key(
         document_file_path, doc_content_hash, summarization_model, prompt_template_hash, prompt_target_char_length
     )
+    logger.debug("Summary cache key: " + cache_key)
 
     cached_summary = cache.get(cache_key)
     if use_cache and cached_summary is not None:
@@ -977,7 +978,7 @@ async def generate_document_summary(
         cache.set(cache_key, summary_text)
 
     logger.info(f"Generated/cached summary for: {document_file_path} (len: {len(summary_text)})")
-    logger.debug(f"1. Summary:\n{summary_text}\n\n2. Prompt:\n{final_prompt_content}")
+    logger.debug(f"1. Summary:\n{summary_text}\n\n2. Prompt:\n{final_prompt_content[:3000]}")
 
     try:
         path_parts = os.path.normpath(document_file_path).split(os.sep)
