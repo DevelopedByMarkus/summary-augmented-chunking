@@ -16,7 +16,7 @@ NONE_ABBR = "X"  # Placeholder for when a component (like reranker) is not used
 
 # --- Constants ---
 
-IDENTIFYING_COLS = ['method', 'embedding_model_name', 'chunk_strategy_name', 'rerank_model_name']
+IDENTIFYING_COLS = ['method', 'embedding_model_name', 'chunk_strategy_name', 'rerank_model_name', 'config_file']
 METRICS_TO_PLOT = {'precision': 'Precision', 'recall': 'Recall', 'f1_score': 'F1-Score'}
 LINESTYLES = ['-', '--', '-.', ':']
 DEFAULT_K = 64
@@ -91,18 +91,15 @@ def get_k_value(row):
 def abbreviate_strategy(strategy_series: pd.Series) -> str:
     """Creates a concise, abbreviated label for a strategy."""
     try:
-        method_abbr = ABBREVIATIONS["method"].get(strategy_series['method'], strategy_series['method'][:4])
-        embed_abbr = ABBREVIATIONS["embedding"].get(strategy_series['embedding_model_name'],
-                                                    strategy_series['embedding_model_name'].split('/')[-1][:6])
-        chunk_abbr = ABBREVIATIONS["chunking"].get(strategy_series['chunk_strategy_name'],
-                                                   strategy_series['chunk_strategy_name'][:5])
-
-        reranker_key = strategy_series['rerank_model_name'] if pd.notna(
-            strategy_series['rerank_model_name']) else '<None>'
-        rerank_abbr = ABBREVIATIONS["reranker"].get(reranker_key,
-                                                    str(reranker_key)[:4])
-
-        return f"{method_abbr}_{embed_abbr}_{chunk_abbr}_{rerank_abbr}"
+        config_path = strategy_series["config_file"]
+        # Remove prefix and suffix
+        return config_path.split("./configs/")[1].replace(".json", "")
+        # method_abbr = ABBREVIATIONS["method"].get(strategy_series['method'], strategy_series['method'][:4])
+        # embed_abbr = ABBREVIATIONS["embedding"].get(strategy_series['embedding_model_name'], strategy_series['embedding_model_name'].split('/')[-1][:6])
+        # chunk_abbr = ABBREVIATIONS["chunking"].get(strategy_series['chunk_strategy_name'], strategy_series['chunk_strategy_name'][:5])
+        # reranker_key = strategy_series['rerank_model_name'] if pd.notna(strategy_series['rerank_model_name']) else '<None>'
+        # rerank_abbr = ABBREVIATIONS["reranker"].get(reranker_key, str(reranker_key)[:4])
+        # return f"{method_abbr}_{chunk_abbr}_{embed_abbr}_{rerank_abbr}"
     except Exception as e:
         print(f"Warning: Error abbreviating strategy {strategy_series.to_dict()}: {e}")
         return "_".join(map(str, strategy_series[IDENTIFYING_COLS].fillna('NaN')))
@@ -236,7 +233,7 @@ def detect_and_select_tasks(df: pd.DataFrame) -> list[str]:
 
     while True:
         try:
-            user_input = input("Enter the indices of tasks to plot (e.g., '0' or '0, 1, 3'): ")
+            user_input = input("Enter the indices of tasks to plot (e.g., '0' or '0, 1, 3' -> without '): ")
             selected_indices = [int(i.strip()) for i in user_input.split(',')]
 
             # Validate indices
@@ -297,6 +294,19 @@ def prepare_data_for_task(df: pd.DataFrame, selected_groups: dict[str, list[int]
     # Create a mapping from strategy ID back to its identifying dict for easier filtering
     id_to_details = {idx: details for idx, details in strategy_map.items() if
                      idx in [item for sublist in selected_groups.values() for item in sublist]}
+    # Get all selected strategy IDs (flatten the list of lists from selected_groups)
+    selected_ids = [
+        strategy_id
+        for group_ids in selected_groups.values()
+        for strategy_id in group_ids
+    ]
+
+    # Build a mapping of strategy ID -> details for only the selected strategies
+    id_to_details = {
+        strategy_id: details
+        for strategy_id, details in strategy_map.items()
+        if strategy_id in selected_ids
+    }
 
     # Filter rows matching selected strategies
     rows_to_keep = []
@@ -399,6 +409,7 @@ def plot_grouped_results(plot_df: pd.DataFrame, selected_groups: dict[str, list[
                     ax.plot(strategy_df['k'], strategy_df[metric], marker='o', linestyle=linestyle, color=group_color,
                             label=label)
 
+        # TODO: Make axis with fixed scale!!
         task_display_name = "Overall" if task_name == "Overall" else task_name.upper()
         ax.set_title(f'{plot_title_base}: {task_display_name} {metric_label} vs. K', fontsize=18)
         ax.set_xlabel('Top-K', fontsize=17)
@@ -409,7 +420,7 @@ def plot_grouped_results(plot_df: pd.DataFrame, selected_groups: dict[str, list[
 
         metric_filename = metric.replace("|", "_")
         task_filename = "overall" if task_name == "Overall" else task_name.lower()
-        plot_filename = output_dir / f"{output_dir.name}_{task_filename}_{metric_filename}_vs_topk.pdf"
+        plot_filename = output_dir / f"{output_dir.name}_{task_filename}_{metric_filename}_vs_topk.png"
         try:
             plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
             print(f"Saved plot: {plot_filename}")
@@ -498,7 +509,7 @@ def plot_combined_results(master_df: pd.DataFrame, selected_groups: dict[str, li
 
         # --- Save the plot ---
         metric_filename = metric.replace("|", "_")
-        plot_filename = output_dir / f"{output_dir.name}_combined_{metric_filename}_vs_topk.pdf"
+        plot_filename = output_dir / f"{output_dir.name}_combined_{metric_filename}_vs_topk.png"
         try:
             plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
             print(f"Saved combined plot: {plot_filename}")

@@ -308,7 +308,7 @@ def create_summary_row(idx: int, config_path: str, strategy: Any, result: Benchm
         })
     elif isinstance(strategy, HybridStrategy):
         row.update({
-            "method": "hypa",
+            "method": "hybrid",
             "bm25_top_k": strategy.bm25_top_k,
             "fusion_top_k": strategy.fusion_top_k,
             "fusion_weight": strategy.fusion_weight,
