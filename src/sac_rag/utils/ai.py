@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 local_model_cache: Dict[str, Any] = {}
 local_reranker_cache: Dict[str, Any] = {}
 
-retry_summary_prompt = "Please follow the described logic to generate the most informative, structured summary of the given legal document that fits within the desired {target_char_length}-character limit."
+retry_summary_prompt = "Your previous summary is too long. Please follow the described logic to generate the most informative, structured summary of the given legal document that fits within the desired {target_char_length}-character limit."
 
 
 # AI Types
