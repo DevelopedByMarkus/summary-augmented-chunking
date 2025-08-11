@@ -85,6 +85,8 @@ def fuse_results_weighted_rrf(
     fused_scores: Dict[str, float] = {}
     text_to_node: Dict[str, NodeWithScore] = {}
 
+    logger.info("fuse_weights: " + str(weights))
+
     # Iterate through each retriever's result list
     for retriever_name, nodes_with_scores in results_dict.items():
         retriever_weight = weights.get(retriever_name, 0)

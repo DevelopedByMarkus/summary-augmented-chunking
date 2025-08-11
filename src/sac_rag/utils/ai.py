@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 local_model_cache: Dict[str, Any] = {}
 local_reranker_cache: Dict[str, Any] = {}
 
-retry_summary_prompt = "Your previous summary is too long. Please follow the described logic to generate the most informative, structured summary of the given legal document that fits within the desired {target_char_length}-character limit."
+retry_summary_prompt = "Your previous summary is too long. Please follow the described logic to generate the most informative, structured summary of the given legal document that fits within a {target_char_length}-character limit."
 
 
 # AI Types
@@ -929,12 +929,15 @@ async def generate_document_summary(
         )
         found_good_summary = False
         last_long_summary = summary_text
-        MAX_RETRIES = 5
+        MAX_RETRIES = 10
         for i in range(MAX_RETRIES):
             try:
                 # Build chat history so that model can improve on its previous summary
                 messages_for_llm.append(AIMessage(role="assistant", content=last_long_summary))
-                retry_target_length = prompt_target_char_length - (i * 10)
+                retry_target_length = prompt_target_char_length - (i * 20)
+                if i > 3:
+                    logger.info("INFO: retry_target_length: " + str(retry_target_length))
+                    logger.info("Last summary: " + str(last_long_summary))
                 messages_for_llm.append(AIMessage(role="user", content=retry_summary_prompt.format(target_char_length=retry_target_length)))
                 retry_summary_text = await ai_call(
                     model=summarization_model, messages=messages_for_llm, max_tokens=llm_max_output_tokens,
