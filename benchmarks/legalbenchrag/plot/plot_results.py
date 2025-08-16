@@ -409,7 +409,14 @@ def plot_grouped_results(plot_df: pd.DataFrame, selected_groups: dict[str, list[
                     ax.plot(strategy_df['k'], strategy_df[metric], marker='o', linestyle=linestyle, color=group_color,
                             label=label)
 
-        # TODO: Make axis with fixed scale!!
+        # Fix y-axis scale per metric
+        if 'precision' in metric.lower() or 'f1_score' in metric.lower():
+            ax.set_ylim(0, 0.4)
+        elif 'recall' in metric:
+            ax.set_ylim(0, 0.8)
+        else:
+            print("No precision, recall or f1_score was found in metric. No ax.set_ylim possible. metric: " + metric)
+
         task_display_name = "Overall" if task_name == "Overall" else task_name.upper()
         ax.set_title(f'{plot_title_base}: {task_display_name} {metric_label} vs. K', fontsize=18)
         ax.set_xlabel('Top-K', fontsize=17)
@@ -491,6 +498,14 @@ def plot_combined_results(master_df: pd.DataFrame, selected_groups: dict[str, li
         ax.set_xlabel('Top-K', fontsize=17)
         ax.set_ylabel(metric_label, fontsize=17)
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+        # Fix y-axis scale per metric
+        if 'precision' in metric.lower() or 'f1_score' in metric.lower():
+            ax.set_ylim(0, 0.4)
+        elif 'recall' in metric:
+            ax.set_ylim(0, 0.8)
+        else:
+            print("No precision, recall or f1_score was found in metric. No ax.set_ylim possible. metric: " + metric)
 
         # --- Create Custom Legends ---
         task_legend_elements = [Line2D([0], [0], color=task_colors[task], lw=3, label=task) for task in selected_tasks
