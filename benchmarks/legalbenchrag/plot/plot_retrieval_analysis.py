@@ -52,7 +52,7 @@ def calculate_wrong_path_percentage(stats):
     return (incorrect / total) * 100
 
 
-def plot_strategy_results(strategy_name, strategy_data, output_dir):
+def plot_strategy_results(strategy_name, strategy_data, output_dir, out_name, title):
     """
     Generates and saves a plot for a single strategy's results.
 
@@ -60,6 +60,8 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir):
         strategy_name (str): The identifier for the strategy.
         strategy_data (dict): Data structured as {top_k: analysis_results}.
         output_dir (Path): Directory to save the plot PNG file.
+        out_name (str): Optional custom filename for the plot.
+        title (str): Optional title for the plot.
     """
     if not strategy_data:
         print(f"Warning: No data found for strategy '{strategy_name}'. Skipping plot.")
@@ -116,7 +118,14 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir):
             y_values_datasets[ds_name].append(float('nan'))
 
     # --- Create Plot ---
-    fig, ax = plt.subplots(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(7, 7))
+
+    ax.set_xscale("log", base=2)
+
+    # Force ticks at your actual x_values
+    ax.set_xticks(x_values)
+    ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())  # show plain numbers (1, 2, 4, ...)
+    ax.ticklabel_format(style='plain', axis='x')  # avoid scientific notation
 
     # Plot overall weighted average
     ax.plot(x_values, y_values_overall, label="Weighted Average (Overall)",
@@ -132,20 +141,24 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir):
         else:
             print(f"Warning: Data length mismatch or missing data for dataset '{ds_name}' in strategy '{strategy_name}'. Skipping its line.")
 
-    # ax.set_title(f"Retrieval Analysis: Wrong File Path %\nStrategy: {strategy_name}", fontsize=14)
+    if title is not None:
+        ax.set_title(title, fontsize=14)
     ax.set_xlabel("Top-K", fontsize=17)
-    ax.set_ylabel("PFD(%)", fontsize=17)
+    ax.set_ylabel("IDE(%)", fontsize=17)
     ax.set_ylim(0, 105)  # Y axis from 0 to 100 (with padding)
     ax.grid(True, linestyle=':', alpha=0.7)
-    ax.legend(fontsize=15)
+    ax.legend(fontsize=10)
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
     # Save plot
     # No need to sanitize filename as user confirmed it's safe
-    plot_filename = os.path.join(output_dir, f"_{strategy_name}_m194.png")  # TODO: Dont hardcode
-    # plot_filename = os.path.join(output_dir, "pfd_baseline.pdf")
+    if out_name is None:
+        plot_filename = os.path.join(output_dir, f"{strategy_name}.png")
+    else:
+        plot_filename = os.path.join(output_dir, out_name)
+
     try:
         plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
         print(f"Plot saved to: {plot_filename}")
@@ -159,13 +172,21 @@ def main():
     parser = argparse.ArgumentParser(description="Generate plots for retrieval file path analysis based on benchmark results.")
     parser.add_argument("--run_subdir",
                         help="Name of the run subdirectory inside 'benchmark_results'. Example: '2024-01-15_10-30-00'")
+    parser.add_argument("--out_dir", type=str, default="plots/legalbenchrag/retrieval_analysis",
+                        help="Directory to save the generated plots. This is relative to the current working dir.")
+    parser.add_argument("--out_name", type=str, default=None,
+                        help="Filename of the resulting plot. This must include the file extension (e.g., .png, .pdf).")
+    parser.add_argument("--title", type=str, default=None,
+                        help="Title for the plot. If not provided, no title will be set.")
     args = parser.parse_args()
+
+    if args.out_name and not args.out_name.endswith(('.png', '.pdf')):
+        raise RuntimeError("Error: The output filename must end with .png or .pdf extension, but was:" + args.out_name)
 
     # --- Determine Paths ---
     project_root = Path.cwd()
     results_base_dir = project_root / "results" / "legalbenchrag"
     target_run_dir = results_base_dir / args.run_subdir
-    plot_output_dir = project_root / "plots" / "legalbenchrag" / "retrieval_analysis"
 
     if not os.path.isdir(target_run_dir):
         print(f"Error: Target directory not found: {target_run_dir}")
@@ -244,7 +265,7 @@ def main():
                 print(f"  Warning: Analysis failed or returned no data for K={top_k} (File: {filename}).")
 
         # Plot the collected data for this strategy
-        plot_strategy_results(strategy_name, strategy_data, plot_output_dir)
+        plot_strategy_results(strategy_name, strategy_data, args.out_dir, args.out_name, args.title)
 
     print("\nPlotting script finished.")
 
