@@ -125,7 +125,7 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir, out_name, ti
                 ds_std[ds].append(float('nan'))
 
     # --- Create Plot ---
-    fig, ax = plt.subplots(figsize=(7, 7))
+    fig, ax = plt.subplots(figsize=(10, 7))
 
     ax.set_xscale("log", base=2)
 
@@ -160,17 +160,19 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir, out_name, ti
                         alpha=0.15, linewidth=0)
 
     if title is not None:
-        ax.set_title(title, fontsize=14)
-    ax.set_xlabel("Top-K", fontsize=17)
-    ax.set_ylabel("IDE(%)", fontsize=17)
+        ax.set_title(title, fontsize=18)
+    ax.set_xlabel("Top-K", fontsize=20)
+    ax.set_ylabel("IDE(%)", fontsize=20)
     ax.set_ylim(0, 105)  # Y axis from 0 to 100 (with padding)
     ax.grid(True, linestyle=':', alpha=0.7)
-    ax.legend(fontsize=10)
+    ax.legend(fontsize=18)
 
     # Force ticks at your actual x_values
     ax.set_xticks(x_values)
     ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())  # show plain numbers (1, 2, 4, ...)
     ax.ticklabel_format(style='plain', axis='x')  # avoid scientific notation
+
+    ax.tick_params(axis='both', which='major', labelsize=18)  # makes the main numbers bigger
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
