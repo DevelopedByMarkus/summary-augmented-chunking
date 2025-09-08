@@ -162,10 +162,10 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir, out_name, ti
     if title is not None:
         ax.set_title(title, fontsize=18)
     ax.set_xlabel("Top-K", fontsize=20)
-    ax.set_ylabel("IDE(%)", fontsize=20)
+    ax.set_ylabel("DRE(%)", fontsize=20)
     ax.set_ylim(0, 105)  # Y axis from 0 to 100 (with padding)
     ax.grid(True, linestyle=':', alpha=0.7)
-    ax.legend(fontsize=18)
+    # ax.legend(fontsize=18)
 
     # Force ticks at your actual x_values
     ax.set_xticks(x_values)
