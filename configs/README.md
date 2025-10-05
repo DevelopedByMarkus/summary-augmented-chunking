@@ -3,6 +3,7 @@
 To have a more efficient way of handling the setting of the retriever part, the setting of them are part of a json file.
 This also helps reproducibility.
 
+```
 {
   "strategy_type": "baseline" (dense retrieval only) or "hybrid" (dense and sparse retrieval),
   "chunking_strategy": {
@@ -29,6 +30,7 @@ This also helps reproducibility.
   "rerank_top_k": [1, 2, 4, 8, 16, 32, 64] (final_top_k_values. Must always be set, even if no reranker is used. Must be a list of integers),
   "token_limit": null (Unused at the moment)
 }
+```
 
 ### Summary Prompt Templates
 
