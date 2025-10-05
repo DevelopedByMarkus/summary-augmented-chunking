@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import numpy as np
 from collections import defaultdict
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -52,14 +53,16 @@ def calculate_wrong_path_percentage(stats):
     return (incorrect / total) * 100
 
 
-def plot_strategy_results(strategy_name, strategy_data, output_dir):
+def plot_strategy_results(strategy_name, strategy_data, output_dir, out_name, title):
     """
-    Generates and saves a plot for a single strategy's results.
+    Generates and saves a plot for a single strategy's results (including mean and std dev when multiple seeds).
 
     Args:
         strategy_name (str): The identifier for the strategy.
         strategy_data (dict): Data structured as {top_k: analysis_results}.
         output_dir (Path): Directory to save the plot PNG file.
+        out_name (str): Optional custom filename for the plot.
+        title (str): Optional title for the plot.
     """
     if not strategy_data:
         print(f"Warning: No data found for strategy '{strategy_name}'. Skipping plot.")
@@ -71,81 +74,116 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir):
         print(f"Warning: No valid K values found for strategy '{strategy_name}'. Skipping plot.")
         return
 
-    # --- Prepare data for plotting ---
-    x_values = sorted_k
-    y_values_overall = []
-    y_values_datasets = defaultdict(list)
+    # --- Gather all dataset names seen across any run and any K ---
     all_datasets = set()
-    legend_counts = {}
-
-    # Get dataset names and counts from the first K value's results
-    first_k_results = strategy_data[sorted_k[0]]
-    if first_k_results and 'datasets' in first_k_results:
-        for ds_name, ds_stats in first_k_results['datasets'].items():
-            all_datasets.add(ds_name)
-            legend_counts[ds_name] = ds_stats.get('total', 0)
-    else:
-        print(f"Warning: Could not extract dataset info from first K value for strategy '{strategy_name}'. Legend might be incomplete.")
-
-    # Calculate percentages for each K
     for k in sorted_k:
-        results = strategy_data[k]
-        if not results: # Should not happen if collected correctly, but safety check
-            print(f"Warning: Missing analysis results for K={k} in strategy '{strategy_name}'. Plot may be incomplete.")
-            # Add NaN or skip? Let's add NaN for plotting continuity break
-            y_values_overall.append(float('nan'))
-            for ds_name in all_datasets:
-                y_values_datasets[ds_name].append(float('nan'))
-            continue
+        for res in strategy_data[k]:
+            if res and 'datasets' in res:
+                all_datasets.update(res['datasets'].keys())
 
-        # Overall percentage
-        overall_pct = calculate_wrong_path_percentage(results.get('overall', {}))
-        y_values_overall.append(overall_pct)
+    # --- Prepare containers for means/stds ---
+    overall_mean = []
+    overall_std = []
 
-        # Per-dataset percentage
-        processed_datasets_for_k = set()
-        if 'datasets' in results:
-            for ds_name, ds_stats in results['datasets'].items():
-                ds_pct = calculate_wrong_path_percentage(ds_stats)
-                y_values_datasets[ds_name].append(ds_pct)
-                processed_datasets_for_k.add(ds_name)
+    ds_mean = {ds: [] for ds in all_datasets}
+    ds_std = {ds: [] for ds in all_datasets}
 
-        # Ensure all datasets have a value for this K (use NaN if missing)
-        missing_datasets = all_datasets - processed_datasets_for_k
-        for ds_name in missing_datasets:
-            y_values_datasets[ds_name].append(float('nan'))
+    # Helper to compute pct safely
+    def pct_overall(res):
+        return calculate_wrong_path_percentage(res.get('overall', {})) if res else float('nan')
+
+    def pct_ds(res, ds):
+        if not res or 'datasets' not in res or ds not in res['datasets']:
+            return float('nan')
+        return calculate_wrong_path_percentage(res['datasets'][ds])
+
+    # --- Compute mean/std per K ---
+    for k in sorted_k:
+        run_results = strategy_data[k]  # list over seeds
+
+        # Overall
+        vals = [pct_overall(r) for r in run_results]
+        vals_arr = np.array(vals, dtype=float)
+        vals_arr = vals_arr[~np.isnan(vals_arr)]
+        if vals_arr.size:
+            overall_mean.append(np.mean(vals_arr))
+            overall_std.append(np.std(vals_arr, ddof=1) if vals_arr.size > 1 else 0.0)
+        else:
+            overall_mean.append(float('nan'))
+            overall_std.append(float('nan'))
+
+        # Each dataset
+        for ds in all_datasets:
+            dvals = [pct_ds(r, ds) for r in run_results]
+            darr = np.array(dvals, dtype=float)
+            darr = darr[~np.isnan(darr)]
+            if darr.size:
+                ds_mean[ds].append(np.mean(darr))
+                ds_std[ds].append(np.std(darr, ddof=1) if darr.size > 1 else 0.0)
+            else:
+                ds_mean[ds].append(float('nan'))
+                ds_std[ds].append(float('nan'))
 
     # --- Create Plot ---
-    fig, ax = plt.subplots(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(10, 7))
 
-    # Plot overall weighted average
-    ax.plot(x_values, y_values_overall, label="Weighted Average (Overall)",
+    ax.set_xscale("log", base=2)
+
+    x_values = sorted_k
+
+    # Overall mean line + std band
+    ax.plot(x_values, overall_mean, label="Weighted Average (Overall)",
             linewidth=2, linestyle='--', color='black', marker='o')
 
-    # Plot each dataset, sorted alphabetically for consistent legend order
-    sorted_legend_datasets = sorted(list(all_datasets))
-    for ds_name in sorted_legend_datasets:
-        total_count = legend_counts.get(ds_name, 'N/A')
-        label = f"{ds_name} ({total_count})"
-        if ds_name in y_values_datasets and len(y_values_datasets[ds_name]) == len(x_values):
-            ax.plot(x_values, y_values_datasets[ds_name], label=label, marker='.')
-        else:
-            print(f"Warning: Data length mismatch or missing data for dataset '{ds_name}' in strategy '{strategy_name}'. Skipping its line.")
+    # Shaded ±1σ band (where both mean and std are finite)
+    overall_mean_arr = np.array(overall_mean, dtype=float)
+    overall_std_arr = np.array(overall_std, dtype=float)
+    valid = np.isfinite(overall_mean_arr) & np.isfinite(overall_std_arr)
+    if np.any(valid):
+        ax.fill_between(
+            np.array(x_values, dtype=float)[valid],
+            (overall_mean_arr - overall_std_arr)[valid],
+            (overall_mean_arr + overall_std_arr)[valid],
+            alpha=0.2, linewidth=0, color='black'
+        )
 
-    # ax.set_title(f"Retrieval Analysis: Wrong File Path %\nStrategy: {strategy_name}", fontsize=14)
-    ax.set_xlabel("Top-K", fontsize=17)
-    ax.set_ylabel("PFD(%)", fontsize=17)
+    # Each dataset: mean line + band
+    for ds in sorted(all_datasets):
+        m = np.array(ds_mean[ds], dtype=float)
+        s = np.array(ds_std[ds], dtype=float)
+        valid = np.isfinite(m) & np.isfinite(s)
+        if not np.any(valid):
+            continue
+        ax.plot(x_values, m, label=ds, marker='.')
+        ax.fill_between(np.array(x_values, dtype=float)[valid],
+                        (m - s)[valid], (m + s)[valid],
+                        alpha=0.15, linewidth=0)
+
+    if title is not None:
+        ax.set_title(title, fontsize=18)
+    ax.set_xlabel("Top-K", fontsize=20)
+    ax.set_ylabel("DRM(%)", fontsize=20)
     ax.set_ylim(0, 105)  # Y axis from 0 to 100 (with padding)
     ax.grid(True, linestyle=':', alpha=0.7)
-    ax.legend(fontsize=15)
+    ax.legend(fontsize=18)
+
+    # Force ticks at your actual x_values
+    ax.set_xticks(x_values)
+    ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())  # show plain numbers (1, 2, 4, ...)
+    ax.ticklabel_format(style='plain', axis='x')  # avoid scientific notation
+
+    ax.tick_params(axis='both', which='major', labelsize=18)  # makes the main numbers bigger
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
     # Save plot
     # No need to sanitize filename as user confirmed it's safe
-    plot_filename = os.path.join(output_dir, f"{strategy_name}.png")
-    # plot_filename = os.path.join(output_dir, "pfd_baseline.pdf")
+    if out_name is None:
+        plot_filename = os.path.join(output_dir, f"{strategy_name}.png")
+    else:
+        plot_filename = os.path.join(output_dir, out_name)
+
     try:
         plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
         print(f"Plot saved to: {plot_filename}")
@@ -157,33 +195,46 @@ def plot_strategy_results(strategy_name, strategy_data, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate plots for retrieval file path analysis based on benchmark results.")
-    parser.add_argument("--run_subdir",
-                        help="Name of the run subdirectory inside 'benchmark_results'. Example: '2024-01-15_10-30-00'")
+    parser.add_argument("--run_subdirs", nargs="+", type=str, required=True,
+                        help="One or more subdirs inside 'results/legalbenchrag' for different seeds.")
+    parser.add_argument("--out_dir", type=str, default="plots/legalbenchrag/retrieval_analysis",
+                        help="Directory to save the generated plots. This is relative to the current working dir.")
+    parser.add_argument("--out_name", type=str, default=None,
+                        help="Filename of the resulting plot. This must include the file extension (e.g., .png, .pdf).")
+    parser.add_argument("--title", type=str, default=None,
+                        help="Title for the plot. If not provided, no title will be set.")
     args = parser.parse_args()
+
+    if args.out_name and not args.out_name.endswith(('.png', '.pdf')):
+        raise RuntimeError("Error: The output filename must end with .png or .pdf extension, but was:" + args.out_name)
 
     # --- Determine Paths ---
     project_root = Path.cwd()
     results_base_dir = project_root / "results" / "legalbenchrag"
-    target_run_dir = results_base_dir / args.run_subdir
-    plot_output_dir = project_root / "plots" / "legalbenchrag" / "retrieval_analysis"
 
-    if not os.path.isdir(target_run_dir):
-        print(f"Error: Target directory not found: {target_run_dir}")
-        sys.exit(1)
+    # Validate and gather all target dirs
+    target_run_dirs = []
+    for subdir in args.run_subdirs:
+        d = results_base_dir / subdir
+        if not os.path.isdir(d):
+            print(f"Error: Target directory not found: {d}")
+            sys.exit(1)
+        target_run_dirs.append(d)
 
     # --- Scan directory and identify strategies ---
     strategy_files = defaultdict(list)  # {strategy_name: [list of full file paths]}
-    print(f"Scanning directory: {target_run_dir}")
-
-    for filename in os.listdir(target_run_dir):
-        full_path = os.path.join(target_run_dir, filename)
-        if os.path.isfile(full_path) and filename.endswith(".json"):
-            parse_result = parse_filename(filename)
-            if parse_result:
-                _index, strategy_name, _top_k = parse_result
-                strategy_files[strategy_name].append(full_path)
-            else:
-                print(f"Warning: Skipping file with unexpected name format: {filename}")
+    print(f"Scanning directories: ")
+    for d in target_run_dirs:
+        print(f" - {d}")
+        for filename in os.listdir(d):
+            full_path = os.path.join(d, filename)
+            if os.path.isfile(full_path) and filename.endswith(".json"):
+                parse_result = parse_filename(filename)
+                if parse_result:
+                    _index, strategy_name, _top_k = parse_result
+                    strategy_files[strategy_name].append(full_path)
+                else:
+                    print(f"Warning: Skipping file with unexpected name format: {filename}")
 
     if not strategy_files:
         print("Error: No valid strategy result files found in the specified directory.")
@@ -217,34 +268,39 @@ def main():
     # --- Process and Plot Selected Strategies ---
     for strategy_name in strategies_to_plot:
         print(f"\nProcessing strategy: {strategy_name}")
-        strategy_data = {} # {top_k: analysis_results}
-        processed_k_values = set()
+
+        # Map each Top-K -> list of analysis_result dicts (one per run that has that K)
+        strategy_data = defaultdict(list)  # {top_k: [analysis_results_from_each_run]}
 
         file_paths = strategy_files[strategy_name]
+
+        # To avoid duplicates within the same run dir, track seen (run_dir, top_k)
+        seen_per_dir_k = set()
 
         for file_path in file_paths:
             filename = os.path.basename(file_path)
             parse_result = parse_filename(filename)
-            if not parse_result: continue # Should not happen if collected correctly
-
-            _index, _s_name, top_k = parse_result
-
-            if top_k in processed_k_values:
-                print(f"  Warning: Duplicate Top-K value {top_k} found for strategy '{strategy_name}' (File: {filename}). Skipping duplicate.")
+            if not parse_result:
                 continue
 
-            # Run analysis
-            analysis_result = analyze_filepaths_for_plotting(file_path)
+            _index, _s_name, top_k = parse_result
+            run_dir = Path(file_path).parent  # which seed/run this file belongs to
 
+            key = (str(run_dir), top_k)
+            if key in seen_per_dir_k:
+                print(
+                    f"  Warning: Duplicate Top-K {top_k} in {run_dir.name} for '{strategy_name}'. Skipping duplicate {filename}.")
+                continue
+            seen_per_dir_k.add(key)
+
+            analysis_result = analyze_filepaths_for_plotting(file_path)
             if analysis_result:
-                strategy_data[top_k] = analysis_result
-                processed_k_values.add(top_k)
-                # print(f"  Analyzed K={top_k} from {filename}") # Verbose
+                strategy_data[top_k].append(analysis_result)
             else:
                 print(f"  Warning: Analysis failed or returned no data for K={top_k} (File: {filename}).")
 
-        # Plot the collected data for this strategy
-        plot_strategy_results(strategy_name, strategy_data, plot_output_dir)
+        # Plot (mean ± std) across runs
+        plot_strategy_results(strategy_name, strategy_data, args.out_dir, args.out_name, args.title)
 
     print("\nPlotting script finished.")
 

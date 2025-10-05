@@ -21,6 +21,7 @@ class ChunkingStrategy(BaseModel):
     summary_prompt_template: Optional[str] = None
     prompt_target_char_length: int = 150  # Default target for LLM prompt
     summary_truncation_length: int = 170  # Default hard truncation limit
+    use_cache: bool | None = True  # Whether to use cached summaries if available, 'False' will overwrite the existing cache
 
 
 class Chunk(BaseModel):
@@ -103,6 +104,7 @@ async def get_chunks(  # Made async
         summary_prompt_template = cast(Optional[str], kwargs.get("summary_prompt_template"))
         prompt_target_char_length = cast(int, kwargs.get("prompt_target_char_length", 150))
         summary_truncation_length = cast(int, kwargs.get("summary_truncation_length", 170))
+        use_cache = cast(bool, kwargs.get("use_cache", True))
         summaries_base_dir = Path.cwd() / "data" / "summaries"
 
         if not summarization_model or not summary_prompt_template:
@@ -119,6 +121,7 @@ async def get_chunks(  # Made async
                 summary_prompt_template=summary_prompt_template,
                 prompt_target_char_length=prompt_target_char_length,
                 truncate_char_length=summary_truncation_length,
+                use_cache=use_cache,
                 summaries_output_dir_base=summaries_base_dir
             )
 
@@ -128,28 +131,13 @@ async def get_chunks(  # Made async
     # Define the format for summary prefix
     summary_prefix = f"[document summary] {document_summary}\n[content] " if is_summary_strategy and document_summary else ""
 
-    actual_summary_component_len = len(
-        summary_prefix)  # This includes the "[document summary]..." and "[content]" parts
-
-    # chunk_size is the TOTAL desired length. Content part should be total minus summary component.
-    content_chunk_target_size = chunk_size - actual_summary_component_len  # TODO: Put summary on top of chunk and not within!
-
-    if is_summary_strategy and content_chunk_target_size <= 0:
-        logger.warning(
-            f"For document {document.file_path} with strategy {strategy_name}, "
-            f"summary component length ({actual_summary_component_len}) "
-            f"is >= total chunk_size ({chunk_size}). Resulting content chunks will be empty or not generated. "
-            f"Content target size: {content_chunk_target_size}."
-        )
-        # Allow chunking functions to receive <=0, they should handle it by returning no spans.
-
     # Perform content chunking based on the original document content
     content_spans: List[tuple[int, int]] = []
     if content_strategy_name == "naive":
-        content_spans = _chunk_naive(document.content, content_chunk_target_size)
+        content_spans = _chunk_naive(document.content, chunk_size)
     elif content_strategy_name == "rcts":
         overlap_ratio = cast(float, kwargs.get("chunk_overlap_ratio", 0.0))  # Use 0.0 as default if not summary_rcts
-        content_spans = _chunk_recursive(document.content, content_chunk_target_size, chunk_overlap_ratio=overlap_ratio)
+        content_spans = _chunk_recursive(document.content, chunk_size, chunk_overlap_ratio=overlap_ratio)
     else:
         raise ValueError(f"Unknown base chunking strategy derived: {content_strategy_name} from {strategy_name}")
 
@@ -159,13 +147,7 @@ async def get_chunks(  # Made async
             continue  # Should be handled by _chunk_xxx if target_size <=0, but defensive check.
 
         original_content_text = document.content[span_start:span_end]
-
-        # Prepend summary if it's a summary strategy and summary text exists
-        if is_summary_strategy and document_summary:
-            # Using the refined format from user
-            final_chunk_text = f"[document summary] {document_summary}\n[content] {original_content_text}"
-        else:
-            final_chunk_text = original_content_text
+        final_chunk_text = summary_prefix + original_content_text
 
         final_chunks.append(
             Chunk(
@@ -175,8 +157,9 @@ async def get_chunks(  # Made async
             )
         )
 
-    if not final_chunks and len(document.content) > 0 and content_chunk_target_size > 0:  # Added condition
+    if not final_chunks and len(document.content) > 0:  # Added condition
+        len_summary_prefix = len(summary_prefix)  # This includes the "[document summary]..." and "[content]" parts
         logger.warning(
-            f"No chunks were generated for document {document.file_path} (len: {len(document.content)}) with strategy {strategy_name}, total_chunk_size {chunk_size}, content_target_size {content_chunk_target_size}.")
+            f"No chunks were generated for document {document.file_path} (len: {len(document.content)}) with strategy {strategy_name}, total_chunk_size {chunk_size}, len summary prefix {len_summary_prefix}).")
 
     return final_chunks

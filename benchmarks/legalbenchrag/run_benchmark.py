@@ -184,7 +184,7 @@ async def run_strategy(
 
 # --- Data Setup Logic ---
 
-def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Document], List[QAGroundTruth], List[float]]:
+def setup_and_load_data(max_tests: int, sort_by_doc: bool, seed: int) -> Tuple[List[Document], List[QAGroundTruth], List[float]]:
     """Loads, samples, and prepares all data needed for the benchmark."""
     all_tests, weights, used_doc_paths = [], [], set()
 
@@ -216,7 +216,10 @@ def setup_and_load_data(max_tests: int, sort_by_doc: bool) -> Tuple[List[Documen
             if sort_by_doc:
                 tests = sorted(tests, key=lambda t: t.snippets[0].file_path if t.snippets else "")
             else:
-                random.seed(dataset_name + str(max_tests))
+                if seed is not None:
+                    random.seed(seed)
+                else:
+                    random.seed(dataset_name + str(max_tests))
                 random.shuffle(tests)
             sampled_tests = tests[:max_tests]
 
@@ -308,7 +311,7 @@ def create_summary_row(idx: int, config_path: str, strategy: Any, result: Benchm
         })
     elif isinstance(strategy, HybridStrategy):
         row.update({
-            "method": "hypa",
+            "method": "hybrid",
             "bm25_top_k": strategy.bm25_top_k,
             "fusion_top_k": strategy.fusion_top_k,
             "fusion_weight": strategy.fusion_weight,
@@ -333,7 +336,7 @@ def create_summary_row(idx: int, config_path: str, strategy: Any, result: Benchm
 # --- Main Orchestrator ---
 
 async def main(args):
-    logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')  # TODO: revert to logging.WARNING
     logging.getLogger("bm25s").setLevel(logging.WARNING)
 
     stats_tracker.start_timer('overall_run')
@@ -346,7 +349,7 @@ async def main(args):
 
     # 1. Setup and load all data once
     stats_tracker.start_timer('data_setup')
-    corpus, tests, weights = setup_and_load_data(args.max_tests_per_benchmark, args.sort_by_document)
+    corpus, tests, weights = setup_and_load_data(args.max_tests_per_benchmark, args.sort_by_document, args.seed)
     stats_tracker.stop_timer('data_setup')
     stats_tracker.set('documents_processed', len(corpus))
     stats_tracker.set('queries_processed', len(tests))
@@ -435,6 +438,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sort-by-document", action="store_true",
         help="Enable sorting by document to potentially speed up ingestion during testing."
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None
     )
     parser.add_argument(
         "--results-dir", type=str, default="./results/legalbenchrag",

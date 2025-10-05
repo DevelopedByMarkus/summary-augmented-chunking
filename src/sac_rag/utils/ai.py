@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 local_model_cache: Dict[str, Any] = {}
 local_reranker_cache: Dict[str, Any] = {}
 
+retry_summary_prompt = "Your previous summary is too long. Please follow the described logic to generate the most informative, structured summary of the given legal document that fits within a {target_char_length}-character limit."
+
 
 # AI Types
 class AIModel(BaseModel):
@@ -809,9 +811,10 @@ def get_document_summary_cache_key(
         document_file_path: str,
         document_content_hash: str,
         summarization_model: AIModel,
-        summary_prompt_template_hash: str
+        summary_prompt_template_hash: str,
+        prompt_target_char_length: int
 ) -> str:
-    return f"summary_v2|||{document_file_path}|||{document_content_hash}|||{summarization_model.company}|||{summarization_model.model}|||{summary_prompt_template_hash}"
+    return f"summary_v2|||{document_file_path}|||{document_content_hash}|||{summarization_model.company}|||{summarization_model.model}|||{summary_prompt_template_hash}|||{prompt_target_char_length}"
 
 
 async def generate_document_summary(
@@ -821,6 +824,7 @@ async def generate_document_summary(
         summary_prompt_template: str,
         prompt_target_char_length: int,
         truncate_char_length: int,
+        use_cache: bool,
         summaries_output_dir_base: str | Path,
         num_ratelimit_retries: int = 5,
         backoff_algo: Callable[[int], float] = lambda i: min(2 ** i, 60) + random.uniform(0, 1)
@@ -830,8 +834,8 @@ async def generate_document_summary(
         to include the beginning and end, which are often the most important parts.
     """
     # Define a safe token limit well within the model's context window
-    # gpt-4o-mini has a 128k context window. 90% (=120k) is a safe upper bound for the input.
-    CONTEXT_WINDOW_BUFFER = 0.5  # 0.9375  # TODO: Find a good value for this!
+    # gpt-4o-mini has a 128k context window. 50% (=64k) is a safe upper bound for the input.
+    CONTEXT_WINDOW_BUFFER = 0.5
     max_tokens_for_summary = int(summarization_model.context_window_tokens * CONTEXT_WINDOW_BUFFER)
 
     if summarization_model.company != "openai":
@@ -842,16 +846,22 @@ async def generate_document_summary(
     prompt_template_hash = hashlib.md5(summary_prompt_template.encode('utf-8', 'replace')).hexdigest()
 
     cache_key = get_document_summary_cache_key(
-        document_file_path, doc_content_hash, summarization_model, prompt_template_hash
+        document_file_path, doc_content_hash, summarization_model, prompt_template_hash, prompt_target_char_length
     )
+    logger.info("Summary cache key: " + cache_key)
 
     cached_summary = cache.get(cache_key)
-    if cached_summary is not None:
-        logger.debug(f"Cache hit for summary: {document_file_path}")
+    logger.info("cached_summary: " + str(cached_summary))
+    if use_cache and cached_summary is not None:
+        logger.info(f"Cache hit for summary: {document_file_path}")
         stats_tracker.increment('summaries_from_cache')
         return cast(str, cached_summary)
 
-    logger.info(f"Cache miss for summary. Generating for: {document_file_path} with {summarization_model.model}")
+    if cached_summary is None:
+        logger.info(f"Cache miss for summary. Generating for: {document_file_path} with {summarization_model.model}")
+    elif not use_cache and cached_summary is not None:
+        logger.info(f"Overwrite existing summary. Generating for: {document_file_path}")
+
     stats_tracker.increment('summaries_not_from_cache')
     cache_summary = True
 
@@ -919,9 +929,16 @@ async def generate_document_summary(
         )
         found_good_summary = False
         last_long_summary = summary_text
-        MAX_RETRIES = 5
+        MAX_RETRIES = 10
         for i in range(MAX_RETRIES):
             try:
+                # Build chat history so that model can improve on its previous summary
+                messages_for_llm.append(AIMessage(role="assistant", content=last_long_summary))
+                retry_target_length = prompt_target_char_length - (i * 20)
+                if i > 3:
+                    logger.info("INFO: retry_target_length: " + str(retry_target_length))
+                    logger.info("Last summary: " + str(last_long_summary))
+                messages_for_llm.append(AIMessage(role="user", content=retry_summary_prompt.format(target_char_length=retry_target_length)))
                 retry_summary_text = await ai_call(
                     model=summarization_model, messages=messages_for_llm, max_tokens=llm_max_output_tokens,
                     temperature=1.0,  # Use high temperature for diversity
@@ -950,6 +967,7 @@ async def generate_document_summary(
             )
             summary_text = last_long_summary[:truncate_char_length].strip()
             stats_tracker.increment('summaries_truncated_after_retries')
+            stats_tracker.increment('summary_length_before_truncation', len(last_long_summary))
 
     if not summary_text.strip() and document_content.strip():
         logger.warning(f"Empty summary for {document_file_path}. Fallback.")
@@ -960,9 +978,11 @@ async def generate_document_summary(
     # If no proper summary was extracted, done write the corrupted summary to cache!
     if cache_summary:
         cache.set(cache_key, summary_text)
+        logger.info(f"Generated AND cached summary for: {document_file_path} (len: {len(summary_text)}) with cache key: {cache_key}.")
+    else:
+        logger.info(f"Generated BUT NOT CACHED summary for: {document_file_path} (len: {len(summary_text)})")
 
-    logger.info(f"Generated/cached summary for: {document_file_path} (len: {len(summary_text)})")
-    logger.debug(f"1. Summary:\n{summary_text}\n\n2. Prompt:\n{final_prompt_content}")
+    logger.debug(f"1. Summary:\n{summary_text}\n\n2. Prompt:\n{final_prompt_content[:3000]}")
 
     try:
         path_parts = os.path.normpath(document_file_path).split(os.sep)
@@ -974,6 +994,7 @@ async def generate_document_summary(
         sanitized_file_name = sanitize_filename(doc_file_name)
         summary_filename_txt = os.path.join(summary_file_dir,
                                             f"{sanitized_file_name}_summary.txt")
+        # TODO: Disable summary saving since not necessary. All summaries are in .json result files
         with open(summary_filename_txt, 'w', encoding='utf-8') as f:
             f.write(summary_text)
         logger.debug(f"Summary for {document_file_path} saved to {summary_filename_txt}")

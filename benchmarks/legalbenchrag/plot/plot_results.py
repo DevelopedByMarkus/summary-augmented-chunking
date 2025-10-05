@@ -16,7 +16,7 @@ NONE_ABBR = "X"  # Placeholder for when a component (like reranker) is not used
 
 # --- Constants ---
 
-IDENTIFYING_COLS = ['method', 'embedding_model_name', 'chunk_strategy_name', 'rerank_model_name']
+IDENTIFYING_COLS = ['method', 'embedding_model_name', 'chunk_strategy_name', 'rerank_model_name', 'config_file']
 METRICS_TO_PLOT = {'precision': 'Precision', 'recall': 'Recall', 'f1_score': 'F1-Score'}
 LINESTYLES = ['-', '--', '-.', ':']
 DEFAULT_K = 64
@@ -91,18 +91,15 @@ def get_k_value(row):
 def abbreviate_strategy(strategy_series: pd.Series) -> str:
     """Creates a concise, abbreviated label for a strategy."""
     try:
-        method_abbr = ABBREVIATIONS["method"].get(strategy_series['method'], strategy_series['method'][:4])
-        embed_abbr = ABBREVIATIONS["embedding"].get(strategy_series['embedding_model_name'],
-                                                    strategy_series['embedding_model_name'].split('/')[-1][:6])
-        chunk_abbr = ABBREVIATIONS["chunking"].get(strategy_series['chunk_strategy_name'],
-                                                   strategy_series['chunk_strategy_name'][:5])
-
-        reranker_key = strategy_series['rerank_model_name'] if pd.notna(
-            strategy_series['rerank_model_name']) else '<None>'
-        rerank_abbr = ABBREVIATIONS["reranker"].get(reranker_key,
-                                                    str(reranker_key)[:4])
-
-        return f"{method_abbr}_{embed_abbr}_{chunk_abbr}_{rerank_abbr}"
+        config_path = strategy_series["config_file"]
+        # Remove prefix and suffix
+        return config_path.split("./configs/")[1].replace(".json", "")
+        # method_abbr = ABBREVIATIONS["method"].get(strategy_series['method'], strategy_series['method'][:4])
+        # embed_abbr = ABBREVIATIONS["embedding"].get(strategy_series['embedding_model_name'], strategy_series['embedding_model_name'].split('/')[-1][:6])
+        # chunk_abbr = ABBREVIATIONS["chunking"].get(strategy_series['chunk_strategy_name'], strategy_series['chunk_strategy_name'][:5])
+        # reranker_key = strategy_series['rerank_model_name'] if pd.notna(strategy_series['rerank_model_name']) else '<None>'
+        # rerank_abbr = ABBREVIATIONS["reranker"].get(reranker_key, str(reranker_key)[:4])
+        # return f"{method_abbr}_{chunk_abbr}_{embed_abbr}_{rerank_abbr}"
     except Exception as e:
         print(f"Warning: Error abbreviating strategy {strategy_series.to_dict()}: {e}")
         return "_".join(map(str, strategy_series[IDENTIFYING_COLS].fillna('NaN')))
@@ -236,7 +233,7 @@ def detect_and_select_tasks(df: pd.DataFrame) -> list[str]:
 
     while True:
         try:
-            user_input = input("Enter the indices of tasks to plot (e.g., '0' or '0, 1, 3'): ")
+            user_input = input("Enter the indices of tasks to plot (e.g., '0' or '0, 1, 3' -> without '): ")
             selected_indices = [int(i.strip()) for i in user_input.split(',')]
 
             # Validate indices
@@ -297,6 +294,19 @@ def prepare_data_for_task(df: pd.DataFrame, selected_groups: dict[str, list[int]
     # Create a mapping from strategy ID back to its identifying dict for easier filtering
     id_to_details = {idx: details for idx, details in strategy_map.items() if
                      idx in [item for sublist in selected_groups.values() for item in sublist]}
+    # Get all selected strategy IDs (flatten the list of lists from selected_groups)
+    selected_ids = [
+        strategy_id
+        for group_ids in selected_groups.values()
+        for strategy_id in group_ids
+    ]
+
+    # Build a mapping of strategy ID -> details for only the selected strategies
+    id_to_details = {
+        strategy_id: details
+        for strategy_id, details in strategy_map.items()
+        if strategy_id in selected_ids
+    }
 
     # Filter rows matching selected strategies
     rows_to_keep = []
@@ -359,6 +369,28 @@ def prepare_data_for_task(df: pd.DataFrame, selected_groups: dict[str, list[int]
     return plot_df
 
 
+def compute_mean_std(plot_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregates over multiple CSVs (seeds) for each (group_name, strategy_unique_id, k).
+    Returns one row per strategy per k with mean/std for precision/recall/f1_score.
+    """
+    metrics = list(METRICS_TO_PLOT.keys())  # ['precision','recall','f1_score']
+    agg_dict = {m: ['mean', 'std'] for m in metrics}
+
+    agg = (
+        plot_df
+        .groupby(['group_name', 'strategy_unique_id', 'k'], as_index=False)
+        .agg(agg_dict)
+    )
+
+    # Flatten multi-index columns like ('precision','mean') -> 'precision_mean'
+    agg.columns = [
+        '_'.join(col).rstrip('_') if isinstance(col, tuple) else col
+        for col in agg.columns
+    ]
+    return agg
+
+
 # --- Main Plotting Logic ---
 
 def plot_grouped_results(plot_df: pd.DataFrame, selected_groups: dict[str, list[int]], output_dir: Path,
@@ -379,32 +411,66 @@ def plot_grouped_results(plot_df: pd.DataFrame, selected_groups: dict[str, list[
             print(f"Skipping plot for '{metric_label}' as column is missing for task '{task_name}'.")
             continue
 
+        # --- aggregate across seeds ---
+        agg_df = compute_mean_std(plot_df)
+
         fig, ax = plt.subplots(figsize=(12, 8))
         group_linestyle_indices = defaultdict(int)
+
+        # x-axis: log2 + natural number ticks
+        x_values = sorted(agg_df['k'].unique().tolist())
+        ax.set_xscale("log", base=2)
+        ax.set_xticks(x_values)
+        ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
 
         for group_name in group_names:
             group_color = colors[group_name]
             strategy_ids_in_group = selected_groups[group_name]
 
             for strategy_id in sorted(strategy_ids_in_group):
-                strategy_df = plot_df[(plot_df['group_name'] == group_name) &
-                                      (plot_df['strategy_unique_id'] == strategy_id)].sort_values(by='k')
+                sdf = (
+                    agg_df[(agg_df['group_name'] == group_name) &
+                           (agg_df['strategy_unique_id'] == strategy_id)]
+                    .sort_values('k')
+                )
+                if sdf.empty:
+                    continue
 
-                if not strategy_df.empty:
-                    style_index = group_linestyle_indices[group_name]
-                    linestyle = LINESTYLES[style_index % len(LINESTYLES)]
-                    group_linestyle_indices[group_name] += 1
+                style_index = group_linestyle_indices[group_name]
+                linestyle = LINESTYLES[style_index % len(LINESTYLES)]
+                group_linestyle_indices[group_name] += 1
 
-                    label = f"{group_name} (Strat {strategy_id})"  # More descriptive label
-                    ax.plot(strategy_df['k'], strategy_df[metric], marker='o', linestyle=linestyle, color=group_color,
-                            label=label)
+                y_mean_col = f"{metric}_mean"
+                y_std_col  = f"{metric}_std"
+
+                # mean line
+                ax.plot(sdf['k'], sdf[y_mean_col], marker='o', linestyle=linestyle,
+                        color=group_color, label=f"{group_name}")
+
+                # shaded ±1σ band
+                ax.fill_between(
+                    sdf['k'].astype(float).to_numpy(),
+                    (sdf[y_mean_col] - sdf[y_std_col]).to_numpy(),
+                    (sdf[y_mean_col] + sdf[y_std_col]).to_numpy(),
+                    alpha=0.15, linewidth=0, color=group_color
+                )
+
+        # Fix y-axis scale per metric
+        if 'precision' in metric.lower() or 'f1_score' in metric.lower():
+            ax.set_ylim(0, 0.4)
+        elif 'recall' in metric:
+            ax.set_ylim(0, 0.8)
+        else:
+            print("No precision, recall or f1_score was found in metric. No ax.set_ylim possible. metric: " + metric)
 
         task_display_name = "Overall" if task_name == "Overall" else task_name.upper()
-        ax.set_title(f'{plot_title_base}: {task_display_name} {metric_label} vs. K', fontsize=18)
-        ax.set_xlabel('Top-K', fontsize=17)
-        ax.set_ylabel(metric_label, fontsize=17)
+        if plot_title_base is not None:
+            ax.set_title(f'{plot_title_base}: {task_display_name} {metric_label} vs. K', fontsize=18)
+        ax.set_xlabel('Top-K', fontsize=20)
+        ax.set_ylabel(metric_label, fontsize=20)
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-        ax.legend(title="Strategy Groups", fontsize=15)
+        ax.legend(fontsize=20)
+        ax.tick_params(axis='both', which='major', labelsize=18)  # makes the main numbers bigger
         plt.tight_layout()
 
         metric_filename = metric.replace("|", "_")
@@ -437,12 +503,14 @@ def plot_combined_results(master_df: pd.DataFrame, selected_groups: dict[str, li
 
     # Loop through each metric to create a separate plot file for it
     for metric, metric_label in METRICS_TO_PLOT.items():
-        fig, ax = plt.subplots(figsize=(14, 9))
+        fig, ax = plt.subplots(figsize=(9, 9))
 
-        # --- Pre-calculate K values for the entire dataframe once ---
+        # Pre-calculate k for the entire dataframe once
         master_df['k'] = master_df.apply(get_k_value, axis=1)
 
-        # Plot lines for each combination of task and strategy
+        # Build x tick set as we go
+        all_k_vals = set()
+
         for task_name in selected_tasks:
             prefix = '' if task_name == 'Overall' else f'{task_name}|'
             metric_col = f"{prefix}{metric}"
@@ -460,7 +528,7 @@ def plot_combined_results(master_df: pd.DataFrame, selected_groups: dict[str, li
                 for strategy_id in selected_groups[group_name]:
                     details = strategy_map[strategy_id]
 
-                    # Build filter condition
+                    # Build filter condition for this strategy across seeds
                     condition = pd.Series([True] * len(master_df))
                     for col, val in details.items():
                         if pd.isna(val):
@@ -468,43 +536,92 @@ def plot_combined_results(master_df: pd.DataFrame, selected_groups: dict[str, li
                         else:
                             condition &= (master_df[col] == val)
 
-                    strategy_df = master_df[condition].copy()
-                    strategy_df[metric_col] = pd.to_numeric(strategy_df[metric_col], errors='coerce')
-                    strategy_df = strategy_df.dropna(subset=['k', metric_col]).sort_values(by='k')
+                    sdf = master_df[condition].copy()
+                    sdf[metric_col] = pd.to_numeric(sdf[metric_col], errors='coerce')
+                    sdf = sdf.dropna(subset=['k', metric_col])
 
-                    if not strategy_df.empty:
-                        ax.plot(strategy_df['k'], strategy_df[metric_col], marker='o', markersize=4,
-                                color=task_color, linestyle=group_linestyle)
+                    if sdf.empty:
+                        continue
+
+                    # Prepare a per-task plotting df with generic names so we can reuse compute_mean_std
+                    task_df = sdf[['k', metric_col]].copy()
+                    task_df.rename(columns={metric_col: metric}, inplace=True)
+
+                    # Inject grouping columns that compute_mean_std expects
+                    task_df['group_name'] = group_name
+                    task_df['strategy_unique_id'] = strategy_id
+
+                    # compute mean/std for this (task, group, strategy)
+                    agg_df = compute_mean_std(task_df.assign(**{m: task_df[metric] if m == metric else np.nan
+                                                                for m in METRICS_TO_PLOT.keys()}))
+
+                    if agg_df.empty:
+                        continue
+
+                    agg_df = agg_df.sort_values('k')
+                    x = agg_df['k'].astype(float).to_numpy()
+                    all_k_vals.update(agg_df['k'].tolist())
+
+                    y_mean = agg_df[f"{metric}_mean"].to_numpy()
+                    y_std  = agg_df[f"{metric}_std"].to_numpy()
+
+                    # mean line (color by task, linestyle by group)
+                    ax.plot(x, y_mean, marker='o', markersize=4,
+                            color=task_color, linestyle=group_linestyle)
+
+                    # shaded ±1σ
+                    ax.fill_between(x, y_mean - y_std, y_mean + y_std,
+                                    alpha=0.15, linewidth=0, color=task_color)
+
+        # x-axis: log2 + natural number ticks
+        if all_k_vals:
+            x_ticks = sorted(all_k_vals)
+            ax.set_xscale("log", base=2)
+            ax.set_xticks(x_ticks)
+            ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
 
         ax.set_title(f'Combined Plot: {metric_label} vs. K', fontsize=18)
         ax.set_xlabel('Top-K', fontsize=17)
         ax.set_ylabel(metric_label, fontsize=17)
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
 
-        # --- Create Custom Legends ---
-        task_legend_elements = [Line2D([0], [0], color=task_colors[task], lw=3, label=task) for task in selected_tasks
-                                if f"{'' if task == 'Overall' else task + '|'}{metric}" in master_df.columns]
-        group_legend_elements = [Line2D([0], [0], color='black', lw=2, linestyle=group_linestyles[group], label=group)
-                                 for group in group_names]
+        # Fix y-axis scale per metric
+        if 'precision' in metric.lower() or 'f1_score' in metric.lower():
+            ax.set_ylim(0, 0.4)
+        elif 'recall' in metric:
+            ax.set_ylim(0, 0.8)
+        else:
+            print("No precision, recall or f1_score was found in metric. No ax.set_ylim possible. metric: " + metric)
+
+        # Legends (Tasks: colors; Groups: linestyles)
+        task_legend_elements = [
+            Line2D([0], [0], color=task_colors[task], lw=3, label=task)
+            for task in selected_tasks
+            if f"{'' if task == 'Overall' else task + '|'}{metric}" in master_df.columns
+        ]
+        group_legend_elements = [
+            Line2D([0], [0], color='black', lw=2, linestyle=group_linestyles[group], label=group)
+            for group in group_names
+        ]
 
         if task_legend_elements and group_legend_elements:
-            legend1 = ax.legend(handles=task_legend_elements, title="Tasks", loc='upper left', bbox_to_anchor=(1.02, 1),
-                                borderaxespad=0.)
+            legend1 = ax.legend(handles=task_legend_elements, title="Tasks", loc='upper left',
+                                bbox_to_anchor=(1.02, 1), borderaxespad=0.)
             ax.add_artist(legend1)
             ax.legend(handles=group_legend_elements, title="Strategy Groups", loc='upper left',
                       bbox_to_anchor=(1.02, 0.7), borderaxespad=0.)
 
         plt.tight_layout(rect=[0, 0, 0.85, 1])
 
-        # --- Save the plot ---
         metric_filename = metric.replace("|", "_")
-        plot_filename = output_dir / f"{output_dir.name}_combined_{metric_filename}_vs_topk.pdf"
+        plot_filename = output_dir / f"{output_dir.name}_combined_{metric_filename}_vs_topk.png"
         try:
             plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
             print(f"Saved combined plot: {plot_filename}")
         except Exception as e:
             print(f"Error saving plot {plot_filename}: {e}")
         plt.close(fig)
+
 
 
 if __name__ == "__main__":
@@ -517,7 +634,7 @@ if __name__ == "__main__":
         "-o", "--output-name", type=str, required=True, help="A unique name for the output directory."
     )
     parser.add_argument(
-        "-t", "--plot-title", type=str, required=True, help="Base title for the plots."
+        "-t", "--plot-title", type=str, help="Base title for the plots."
     )
     args = parser.parse_args()
 

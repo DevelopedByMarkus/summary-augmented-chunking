@@ -85,6 +85,8 @@ def fuse_results_weighted_rrf(
     fused_scores: Dict[str, float] = {}
     text_to_node: Dict[str, NodeWithScore] = {}
 
+    logger.info("fuse_weights: " + str(weights))
+
     # Iterate through each retriever's result list
     for retriever_name, nodes_with_scores in results_dict.items():
         retriever_weight = weights.get(retriever_name, 0)
@@ -139,6 +141,7 @@ class HybridRetrievalMethod(RetrievalMethod):
         self.bm25_retriever = None
         self._llama_embed_model = None
         self.vector_index = None
+        self._bm25_nodes: list[TextNode] = []
 
         # Create a persistent client
         db = chromadb.PersistentClient(path="./data/cache/hybrid_chroma_db")
@@ -261,6 +264,7 @@ class HybridRetrievalMethod(RetrievalMethod):
             chunking_params["summary_prompt_template"] = self.retrieval_strategy.chunking_strategy.summary_prompt_template
             chunking_params["prompt_target_char_length"] = self.retrieval_strategy.chunking_strategy.prompt_target_char_length
             chunking_params["summary_truncation_length"] = self.retrieval_strategy.chunking_strategy.summary_truncation_length
+            chunking_params["use_cache"] = self.retrieval_strategy.chunking_strategy.use_cache
 
         all_chunks_tasks: List[asyncio.Task[List[Chunk]]] = []
         for document in self.documents.values():
@@ -330,6 +334,9 @@ class HybridRetrievalMethod(RetrievalMethod):
             # Add the batch of nodes to the persistent vector store
             await self.vector_store.async_add(batch_nodes)
 
+            # Also keep them for BM25 (in-memory)
+            self._bm25_nodes.extend(batch_nodes)  # TODO: Integrate a persistent BM25 retriever (disk-based)
+
         print(f"Hybrid: Finished ingesting {len(all_chunks)} nodes into ChromaDB.")
 
         # 3. Set the global LlamaIndex embedding model (likely needed for query time)
@@ -345,16 +352,14 @@ class HybridRetrievalMethod(RetrievalMethod):
         )
         print("Hybrid: Vector index built.")
 
-        # 5. Build BM25 Retriever by loading nodes from the index's docstore
-        print("Hybrid: Building BM25 retriever...")  # TODO: Check if BM25 retriever works correctly after Chroma integration
-        # This loads nodes from the ChromaDB docstore
-        nodes_for_bm25 = list(self.vector_index.docstore.docs.values())
-        if not nodes_for_bm25:
-            print("Hybrid: WARNING: No nodes found in the docstore to build BM25 index.")
+        # 5. Build BM25 Retriever
+        print("Hybrid: Building BM25 retriever...")
+        if not self._bm25_nodes:
+            print("Hybrid: WARNING: No nodes for BM25.")
             self.bm25_retriever = None
         else:
             self.bm25_retriever = BM25Retriever.from_defaults(
-                nodes=nodes_for_bm25,
+                nodes=self._bm25_nodes,
                 similarity_top_k=self.retrieval_strategy.bm25_top_k
             )
         print("Hybrid: BM25 retriever built.")
@@ -471,4 +476,5 @@ class HybridRetrievalMethod(RetrievalMethod):
         self.vector_index = None
         self.bm25_retriever = None
         self._llama_embed_model = None
+        self._bm25_nodes = []
         print("Hybrid: Cleanup complete.")
