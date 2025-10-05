@@ -59,6 +59,7 @@ Each benchmark directory contains a `README.md` file with detailed instructions 
 
 If you would like to use this work, please cite us!
 
+```bash
 @article{reuter2025towards,
   title={Towards Reliable Retrieval in RAG Systems for Large Legal Datasets},
   author={Reuter, Markus and Lingenberg Tobias and ...},
@@ -66,9 +67,11 @@ If you would like to use this work, please cite us!
   year={2025},
   url={https://arxiv.org/abs/...}
 }
+ ```
 
 Additionally, here are citations for the datasets we use in this work:
 
+```bash
 @article{koreeda2021contractnli,
   title={ContractNLI: A dataset for document-level natural language inference for contracts},
   author={Koreeda, Yuta and Manning, Christopher D},
@@ -104,3 +107,4 @@ Additionally, here are citations for the datasets we use in this work:
     pages = "4949--4959",
     abstract = "Privacy policies are long and complex documents that are difficult for users to read and understand. Yet, they have legal effects on how user data can be collected, managed and used. Ideally, we would like to empower users to inform themselves about the issues that matter to them, and enable them to selectively explore these issues. We present PrivacyQA, a corpus consisting of 1750 questions about the privacy policies of mobile applications, and over 3500 expert annotations of relevant answers. We observe that a strong neural baseline underperforms human performance by almost 0.3 F1 on PrivacyQA, suggesting considerable room for improvement for future systems. Further, we use this dataset to categorically identify challenges to question answerability, with domain-general implications for any question answering system. The PrivacyQA corpus offers a challenging corpus for question answering, with genuine real world utility.",
 }
+ ```
