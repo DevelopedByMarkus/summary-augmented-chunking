@@ -12,8 +12,13 @@ ALRAG is our custom-built benchmark for **end-to-end evaluation** of legal RAG s
 
 ### Metrics
 
-TODO...
+TODO... This part is still in progress and will be updated later.
 
 ### Analysis
 
 Some analysis scripts are provided in the `analysis/` directory to analyze the corpus and qa-dataset.
+
+## Results
+
+1. In case of summary chunking methods, the summary will be saved to `data/summaries/benchmark_name`.
+2. The benchmark results will be saved to json files in the `results/alrag/runname` directory.
