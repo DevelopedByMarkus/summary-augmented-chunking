@@ -60,12 +60,12 @@ Each benchmark directory contains a `README.md` file with detailed instructions 
 If you would like to use this work, please cite us!
 
 ```bash
-@article{reuter2025towards,
+@inproceedings{reuter2025towards,
   title={Towards Reliable Retrieval in RAG Systems for Large Legal Datasets},
-  author={Reuter, Markus and Lingenberg Tobias and ...},
-  journal={arXiv preprint arXiv:...},
-  year={2025},
-  url={https://arxiv.org/abs/...}
+  author={Reuter, Markus and Lingenberg, Tobias and Liepina, Ruta and Lagioia, Francesca and Lippi, Marco and Sartor, Giovanni and Passerini, Andrea and Sayin, Burcu},
+  booktitle={Proceedings of the Natural Legal Language Processing Workshop 2025},
+  pages={17--30},
+  year={2025}
 }
  ```
 
